@@ -27,7 +27,7 @@ class CameraIntrinsics:
         """Construct intrinsics from horizontal field-of-view in degrees."""
         fov_rad = np.deg2rad(fov_deg)
         fx = (width / 2.0) / np.tan(fov_rad / 2.0)
-        fy = fx  # square pixels assumed
+        fy = (height / 2.0) / np.tan(fov_rad / 2.0)  # square sensor aspect
         cx = width / 2.0
         cy = height / 2.0
         return cls(fx=float(fx), fy=float(fy), cx=float(cx), cy=float(cy), width=int(width), height=int(height))
@@ -37,6 +37,7 @@ def extract_target_depth(
     depth_map: np.ndarray,
     bbox: Sequence[float],
     *,
+    src_shape: Optional[Tuple[int, int]] = None,
     core_frac: float = 0.5,
 ) -> float:
     """Extract robust target depth from the central core of the bounding box.
@@ -44,6 +45,7 @@ def extract_target_depth(
     Args:
         depth_map: [H, W] float array in meters.
         bbox: [u_min, v_min, u_max, v_max] in pixel coordinates.
+        src_shape: (src_w, src_h) of the detection bounding box coordinate system (if different from depth_map).
         core_frac: Fraction of the central box to sample (defaults to 0.5 to avoid background bleed).
 
     Returns:
@@ -51,11 +53,25 @@ def extract_target_depth(
     """
     h, w = depth_map.shape[:2]
     u0, v0, u1, v1 = [float(x) for x in bbox]
+
+    # Scale bbox if source detection resolution differs from depth_map resolution
+    if src_shape is not None:
+        src_w, src_h = src_shape
+        if src_w > 0 and src_h > 0:
+            scale_x = float(w) / float(src_w)
+            scale_y = float(h) / float(src_h)
+            u0 *= scale_x
+            u1 *= scale_x
+            v0 *= scale_y
+            v1 *= scale_y
+
     u0, u1 = max(0, min(w - 1, u0)), max(0, min(w - 1, u1))
     v0, v1 = max(0, min(h - 1, v0)), max(0, min(h - 1, v1))
 
-    if u1 <= u0 or v1 <= v0:
-        return float("nan")
+    if u1 <= u0:
+        u1 = min(w, u0 + 2)
+    if v1 <= v0:
+        v1 = min(h, v0 + 2)
 
     bw = u1 - u0
     bh = v1 - v0
@@ -70,7 +86,12 @@ def extract_target_depth(
     patch = depth_map[cv0:cv1, cu0:cu1]
     valid = np.isfinite(patch) & (patch > 0.0)
     if not np.any(valid):
-        return float("nan")
+        # Fallback to whole bbox if core has holes
+        patch_full = depth_map[int(v0):int(v1), int(u0):int(u1)]
+        valid_full = np.isfinite(patch_full) & (patch_full > 0.0)
+        if not np.any(valid_full):
+            return float("nan")
+        return float(np.median(patch_full[valid_full]))
 
     return float(np.median(patch[valid]))
 
@@ -80,6 +101,7 @@ def bbox_to_goal_rel(
     depth_map: np.ndarray,
     intrinsics: CameraIntrinsics,
     *,
+    src_shape: Optional[Tuple[int, int]] = None,
     core_frac: float = 0.5,
 ) -> Optional[np.ndarray]:
     """Back-project 2D bbox + depth map to 4D body-frame goal_rel.
@@ -91,13 +113,19 @@ def bbox_to_goal_rel(
     Returns:
         np.ndarray [d_fwd, d_left, d_up, remaining_dist] in float32, or None if invalid.
     """
-    d_target = extract_target_depth(depth_map, bbox, core_frac=core_frac)
+    d_target = extract_target_depth(depth_map, bbox, src_shape=src_shape, core_frac=core_frac)
     if not np.isfinite(d_target) or d_target <= 0.0:
         return None
 
     u0, v0, u1, v1 = bbox
     u_c = (u0 + u1) * 0.5
     v_c = (v0 + v1) * 0.5
+
+    # If bbox was given in different resolution than intrinsics, scale center
+    if src_shape is not None:
+        src_w, src_h = src_shape
+        u_c = (u_c / float(src_w)) * float(intrinsics.width)
+        v_c = (v_c / float(src_h)) * float(intrinsics.height)
 
     # Pinhole back-projection in camera frame
     x_cam = (u_c - intrinsics.cx) * d_target / intrinsics.fx
