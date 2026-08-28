@@ -2,7 +2,9 @@
 
 from vgoal.bridge import VisualGoalPolicyConfig, VisualGoalWAMPolicy
 from vgoal.detector import BaseDetector, DetectionResult, MockDetector, YOLOTargetDetector
+from vgoal.dynamic_tracker import DynamicTargetTracker, DynamicTrackerConfig, TrackingMode
 from vgoal.geometry import CameraIntrinsics, bbox_to_goal_rel, project_3d_to_pixel
+from vgoal.search_planner import AreaSearchPlanner, SearchAreaConfig, SearchPattern
 from vgoal.tracker import TargetState, TargetTracker, TrackerConfig
 
 __all__ = [
@@ -18,4 +20,10 @@ __all__ = [
     "TrackerConfig",
     "VisualGoalWAMPolicy",
     "VisualGoalPolicyConfig",
+    "AreaSearchPlanner",
+    "SearchAreaConfig",
+    "SearchPattern",
+    "DynamicTargetTracker",
+    "DynamicTrackerConfig",
+    "TrackingMode",
 ]

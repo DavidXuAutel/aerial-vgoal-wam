@@ -244,8 +244,20 @@ class VisualGoalWAMPolicy:
         ], dtype=np.float32)
         info_dict["goal"] = w_target
 
-        from experiments.aerial.rl.env.obs import Observation
-        full_obs = Observation(rgb=rgb_arr, state=state_vec, t=cur_t, info=info_dict)
+        try:
+            from experiments.aerial.rl.env.obs import Observation
+            full_obs = Observation(rgb=rgb_arr, state=state_vec, t=cur_t, info=info_dict)
+        except ImportError:
+            from dataclasses import dataclass
+
+            @dataclass
+            class _FallbackObs:
+                rgb: np.ndarray
+                state: np.ndarray
+                t: float
+                info: dict
+
+            full_obs = _FallbackObs(rgb=rgb_arr, state=state_vec, t=cur_t, info=info_dict)
 
         # Step 6: Recurrent Latent Streaming (observe_and_advance)
         if (

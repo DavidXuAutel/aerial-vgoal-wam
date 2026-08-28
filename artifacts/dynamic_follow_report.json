@@ -1,0 +1,45 @@
+{
+  "episodes": 5,
+  "pattern": "circle",
+  "target_speed_mps": 2.0,
+  "acquisition_rate": 1.0,
+  "mean_acquisition_time_s": 7.62,
+  "mean_follow_retention": 0.9513333333333334,
+  "episode_details": [
+    {
+      "episode": 1,
+      "acquired": true,
+      "acquisition_time_s": 0.0,
+      "follow_retention": 0.9633333333333334,
+      "mean_standoff_dist_error_m": 6.971090893373185
+    },
+    {
+      "episode": 2,
+      "acquired": true,
+      "acquisition_time_s": 19.0,
+      "follow_retention": 1.0,
+      "mean_standoff_dist_error_m": 27.862031069593595
+    },
+    {
+      "episode": 3,
+      "acquired": true,
+      "acquisition_time_s": 19.1,
+      "follow_retention": 1.0,
+      "mean_standoff_dist_error_m": 29.013589895830826
+    },
+    {
+      "episode": 4,
+      "acquired": true,
+      "acquisition_time_s": 0.0,
+      "follow_retention": 0.8933333333333333,
+      "mean_standoff_dist_error_m": 8.184510478450624
+    },
+    {
+      "episode": 5,
+      "acquired": true,
+      "acquisition_time_s": 0.0,
+      "follow_retention": 0.9,
+      "mean_standoff_dist_error_m": 7.8102930568762545
+    }
+  ]
+}

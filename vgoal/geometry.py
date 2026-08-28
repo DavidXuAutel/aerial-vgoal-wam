@@ -27,7 +27,7 @@ class CameraIntrinsics:
         """Construct intrinsics from horizontal field-of-view in degrees."""
         fov_rad = np.deg2rad(fov_deg)
         fx = (width / 2.0) / np.tan(fov_rad / 2.0)
-        fy = (height / 2.0) / np.tan(fov_rad / 2.0)  # square sensor aspect
+        fy = fx  # square sensor pixel aspect
         cx = width / 2.0
         cy = height / 2.0
         return cls(fx=float(fx), fy=float(fy), cx=float(cx), cy=float(cy), width=int(width), height=int(height))
