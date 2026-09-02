@@ -73,8 +73,12 @@ def main() -> int:
     ap.add_argument("--standoff-m", type=float, default=1.0)
     ap.add_argument("--success-dist", type=float, default=0.50)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--target-classes", default="potted plant", required=False)
     ap.add_argument("--out-dir", default="artifacts/videos/indoor_vgoal_standoff_20260902")
     args = ap.parse_args()
+    classes = [c.strip() for c in str(args.target_classes).split(",") if c.strip()]
+    if not classes:
+        raise SystemExit("target-classes required")
 
     indoor = Path(args.indoor_root)
     sys.path.insert(0, str(indoor))
@@ -110,7 +114,13 @@ def main() -> int:
         device=str(args.device),
     )
     shield = _build_safety(cfg.get("safety") or {})
-    det = YOLOTargetDetector(model_path="yolov8n.pt", conf_threshold=0.4, imgsz=640, device="0")
+    det = YOLOTargetDetector(
+        model_path="yolov8n.pt",
+        target_classes=classes,
+        conf_threshold=0.4,
+        imgsz=640,
+        device="0",
+    )
     pol = VisualGoalWAMPolicy(
         dynamics=dynamics,
         actor_critic=actor,

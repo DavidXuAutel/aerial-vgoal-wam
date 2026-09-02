@@ -156,8 +156,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--yolo-imgsz", type=int, default=640)
     p.add_argument(
         "--target-classes",
-        default="",
-        help="Comma-separated COCO class filter (e.g. refrigerator). Empty = unfiltered",
+        required=True,
+        help="Required fixed COCO class(es), e.g. 'potted plant' or 'refrigerator'. "
+        "Unfiltered / switching targets is not a valid indoor object-goal trial.",
     )
     p.add_argument(
         "--out-report",
@@ -236,9 +237,9 @@ def main() -> int:
 
     intrinsics = CameraIntrinsics.from_fov(fov_deg=args.fov_deg, width=224, height=224)
     yolo_device = "0" if str(args.device).startswith("cuda") else "cpu"
-    class_filter: Optional[Sequence[str]] = None
-    if str(args.target_classes).strip():
-        class_filter = [c.strip() for c in str(args.target_classes).split(",") if c.strip()]
+    class_filter = [c.strip() for c in str(args.target_classes).split(",") if c.strip()]
+    if not class_filter:
+        raise SystemExit("--target-classes is required (fixed object). Empty/unfiltered is invalid.")
     target_detector = YOLOTargetDetector(
         model_path=args.yolo_weights,
         target_classes=class_filter,
@@ -318,7 +319,7 @@ def main() -> int:
         args.yolo_weights,
         args.yolo_conf,
         args.yolo_imgsz,
-        class_filter or "unfiltered",
+        class_filter,
     )
 
     for idx, r in enumerate(routes_to_eval):
@@ -414,9 +415,7 @@ def main() -> int:
     summary = {
         **semantic_nav_report_fields(
             depth_source="airsim_depth" if depth_pred is None else "depth_head",
-            visual_prompt=(
-                ",".join(class_filter) if class_filter else "yolo_coco_unfiltered"
-            ),
+            visual_prompt=",".join(class_filter),
             phase="P0",
         ),
         "control_mode": "vision_standoff",
@@ -431,7 +430,7 @@ def main() -> int:
         "yolo_weights": args.yolo_weights,
         "yolo_conf": float(args.yolo_conf),
         "yolo_imgsz": int(args.yolo_imgsz),
-        "target_classes": list(class_filter) if class_filter else None,
+        "target_classes": list(class_filter),
         "n_episodes": len(results),
         "arrival_rate": float(n_arrived / max(1, len(results))),
         "severe_collision_rate": float(n_severe_coll / max(1, len(results))),

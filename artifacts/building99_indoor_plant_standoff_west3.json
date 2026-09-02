@@ -1,0 +1,20 @@
+[
+  {
+    "trajectory_id": "B99_lobby_west_plant_a",
+    "gpt_instruction": "Approach potted plant standoff 1m (west lobby spawn A)",
+    "pos": [[1.0, 0.0, 1.8], [1.0, 0.0, 1.8]],
+    "yaw": [3.1416, 3.1416]
+  },
+  {
+    "trajectory_id": "B99_lobby_west_plant_b",
+    "gpt_instruction": "Approach potted plant standoff 1m (west lobby spawn B)",
+    "pos": [[1.0, 0.2, 1.8], [1.0, 0.2, 1.8]],
+    "yaw": [3.1416, 3.1416]
+  },
+  {
+    "trajectory_id": "B99_lobby_west_plant_c",
+    "gpt_instruction": "Approach potted plant standoff 1m (west lobby spawn C)",
+    "pos": [[0.8, 0.0, 1.8], [0.8, 0.0, 1.8]],
+    "yaw": [3.0, 3.0]
+  }
+]

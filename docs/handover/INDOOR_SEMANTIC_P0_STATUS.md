@@ -2,20 +2,11 @@
 
 | 项 | 状态 |
 |----|------|
-| 语义 | ✅ YOLO 目标 → **物体前 standoff 航点**（默认 1m）→ 飞到该点；ann **仅 spawn** |
-| 真视觉+depth | ✅ `use_full_obs` 把 depth 交给反投影（`policy_view` 无 depth） |
-| standoff2 @125 | ⚠️ **1/3** vision_arrived · coll=3/3 · stamp `20260902_vgoal_standoff2` |
+| 语义 | ✅ 固定物体 → 前 1m standoff 航点 → 飞到；ann 仅 spawn |
+| 方法论纠错 | ❌ 先前 **unfiltered**（person/plant 乱跳）**无效**；现强制 `--target-classes` |
+| 固定物体重跑 | ⏳ `potted plant` · west×3 spawn · stamp `20260902_vgoal_plant` |
 | Gate / archive | ❌ 未过 |
 
-## standoff2 明细
+探针：west 大厅 `potted plant` 稳定；`refrigerator` 在 sg 三向 FOV 里几乎看不到（不宜作本批固定目标）。
 
-| route | vision_arr | min_standoff | min_obj | det | coll |
-|-------|------------|--------------|---------|-----|------|
-| west | ✅ | 0.36 | 0.91 | person | ✅ |
-| south | ❌ | 1.28 | 2.28 | person | ✅ |
-| east | ❌ | 2.40 | 3.19 | person | ✅ |
-
-报告：`artifacts/indoor_vgoal_eval_20260902_vgoal_standoff2.json`  
-commits：vgoal `81456ac` · indoor `f68481f`
-
-**禁止**：用 ann 几何终点冒充 vision PASS；GT dock 刷分。
+**禁止**：无过滤/换类冒充 object-goal；ann 终点冒充 vision PASS。

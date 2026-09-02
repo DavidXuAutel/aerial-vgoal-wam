@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# Wire original vgoal eval to aerial-indoor-wam on 125.
+# Indoor object-goal vgoal eval on 125 (fixed target class required).
 set -euo pipefail
 VGOAL_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 INDOOR_ROOT="${AERIAL_INDOOR_ROOT:-/home/yao/aerial-indoor-wam}"
-STAMP="${STAMP:-20260902_vgoal_vision}"
-ANN="${ANN:-building99_indoor_short_routes_clean_sg.json}"
+STAMP="${STAMP:-20260902_vgoal_plant}"
+# Spawn set facing a stable lobby plant (ann end unused; spawn-only).
+ANN="${ANN:-$VGOAL_ROOT/artifacts/building99_indoor_plant_standoff_west3.json}"
 OUT="${OUT:-$VGOAL_ROOT/artifacts/indoor_vgoal_eval_${STAMP}.json}"
 STANDOFF_M="${STANDOFF_M:-1.0}"
-TARGET_CLASSES="${TARGET_CLASSES:-}"
+# Fixed object — unfiltered / switching classes is not a valid trial.
+TARGET_CLASSES="${TARGET_CLASSES:-potted plant}"
 
+if [[ -z "${TARGET_CLASSES// }" ]]; then
+  echo "[indoor_vgoal] TARGET_CLASSES must name a fixed object (e.g. 'potted plant')" >&2
+  exit 2
+fi
 
 cd "$INDOOR_ROOT"
 # shellcheck disable=SC1091
@@ -24,7 +30,7 @@ ss -ltn | grep -q 41451
 
 mkdir -p "$VGOAL_ROOT/artifacts" "$VGOAL_ROOT/logs"
 LOG="$VGOAL_ROOT/logs/indoor_vgoal_${STAMP}.log"
-echo "[indoor_vgoal] indoor=$INDOOR_ROOT vgoal=$VGOAL_ROOT $(date -Is)" | tee "$LOG"
+echo "[indoor_vgoal] indoor=$INDOOR_ROOT vgoal=$VGOAL_ROOT target='$TARGET_CLASSES' ann=$ANN $(date -Is)" | tee "$LOG"
 
 cd "$VGOAL_ROOT"
 $AERIAL_PY examples/eval_indoor_semantic_p0.py \
