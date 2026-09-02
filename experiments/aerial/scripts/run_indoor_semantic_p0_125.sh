@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Indoor semantic P0 on 125 — Building99 + indoor ckpts + vgoal detector.
 set -euo pipefail
-VGOAL_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+VGOAL_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 INDOOR_ROOT="${AERIAL_INDOOR_ROOT:-/home/yao/aerial-indoor-wam}"
 STAMP="${STAMP:-20260902_p0}"
 OUT="${OUT:-$VGOAL_ROOT/artifacts/indoor_semantic_p0_summary_${STAMP}.json}"
