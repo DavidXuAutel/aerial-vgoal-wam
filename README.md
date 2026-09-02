@@ -16,7 +16,9 @@
 
 ## 📂 核心文档与设计方案
 
-* 完整设计方案详见：[`docs/plans/visual-object-goal-wam.md`](docs/plans/visual-object-goal-wam.md)
+* Method B 母本：[`docs/plans/visual-object-goal-wam.md`](docs/plans/visual-object-goal-wam.md)
+* **Indoor 语义导航（指令→开放词表→搜+飞）**：[`docs/superpowers/specs/2026-09-02-indoor-semantic-nav-design.md`](docs/superpowers/specs/2026-09-02-indoor-semantic-nav-design.md)  
+  · 承接自 `aerial-indoor-wam` Stick close（2026-09-02）；P0→P1→P2；**不**等室外 Phase-2 / F4 域训
 
 ---
 
