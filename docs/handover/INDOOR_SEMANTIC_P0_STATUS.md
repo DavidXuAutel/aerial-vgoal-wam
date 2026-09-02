@@ -2,12 +2,20 @@
 
 | 项 | 状态 |
 |----|------|
-| 语义 | ✅ 固定物体 → 前 1m standoff；ann 仅 spawn |
-| 方法论 | ✅ 强制 `--target-classes`（禁止 unfiltered 换目标） |
-| 固定 `potted plant` west×3 | ⚠️ **0/3** · 全 `last_det=potted plant` · 但 `min_obj≈15m`（跟到远株）· coll=3/3 |
+| 任务 | 找大厅 **pillar** → 停在前 **1m** |
+| 检测 | YOLO-World `visual_prompt=pillar` · 近距优先 · ann 仅 spawn |
+| pillar2 @125 | ⚠️ **0/3** arrived · 目标已锁 `pillar` · coll=3/3 · conf=0.01 |
 | Gate / archive | ❌ |
 
-报告：`artifacts/indoor_vgoal_eval_20260902_vgoal_plant.json`  
-说明：类别已锁死，但 YOLO 仍可能选**同名远距离实例**；需实例锁定 / 近距优先，不是再换类乱跟。
+## pillar2 明细
 
-**禁止**：无过滤换目标；ann 终点冒充 vision PASS。
+| route | det | hits | min_obj | min_standoff | coll |
+|-------|-----|------|---------|--------------|------|
+| east_a | pillar | 7 | 4.07 | 2.45 | Y |
+| east_b | pillar | 1 | 21.55 | 20.54 | Y |
+| east_c | pillar | 5 | 2.69 | 1.20 | Y |
+
+报告：`artifacts/indoor_vgoal_eval_20260902_vgoal_pillar2.json`  
+注：224 RGB 下 pillar 开词表置信度极低（~0.01）；east_c 最接近（obj≈2.7m / standoff≈1.2m）但撞了。
+
+**禁止**：换类乱跟；ann 终点冒充 vision PASS。
