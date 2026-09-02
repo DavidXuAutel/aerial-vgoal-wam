@@ -55,6 +55,8 @@ class VisualGoalDeployPolicyWrapper:
 
     def __init__(self, vgoal_policy: VisualGoalWAMPolicy) -> None:
         self.vgoal_policy = vgoal_policy
+        # indoor act_delta: pass full Observation (incl. depth) for bbox→goal_rel
+        self.use_full_obs = True
         self.policy_calls = 0
         self.detect_hits = 0
         self.last_det_name: Optional[str] = None
