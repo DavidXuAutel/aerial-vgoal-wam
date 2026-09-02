@@ -2,22 +2,20 @@
 
 | 项 | 状态 |
 |----|------|
-| 接线 | ✅ 原 vgoal + `terminal_dock=False`（真视觉） |
-| GT-dock 伪测 (sg) | ⚠️ 2/3 — **无效**（`policy_calls=0`） |
-| **真视觉** (sg) | ✅ 已跑 stamp `20260902_vgoal_vision` · **0/3** arrived · coll=0 · `mean_policy_calls=242` |
-| Gate / archive | ❌ 未过 — **不 archive** |
+| 语义 | ✅ YOLO 目标 → **物体前 standoff 航点**（默认 1m）→ 飞到该点；ann **仅 spawn** |
+| 真视觉+depth | ✅ `use_full_obs` 把 depth 交给反投影（`policy_view` 无 depth） |
+| standoff2 @125 | ⚠️ **1/3** vision_arrived · coll=3/3 · stamp `20260902_vgoal_standoff2` |
+| Gate / archive | ❌ 未过 |
 
-## 真视觉结果（`clean_sg`）
+## standoff2 明细
 
-| route | arrived | d0→d_end | policy_calls | detect | last_det |
-|-------|---------|----------|--------------|--------|----------|
-| west | ❌ | 3.00→4.34 | 242 | 173 | person |
-| south | ❌ | 3.30→4.70 | 242 | 174 | potted plant |
-| east | ❌ | 3.34→4.72 | 242 | 163 | person |
+| route | vision_arr | min_standoff | min_obj | det | coll |
+|-------|------------|--------------|---------|-----|------|
+| west | ✅ | 0.36 | 0.91 | person | ✅ |
+| south | ❌ | 1.28 | 2.28 | person | ✅ |
+| east | ❌ | 2.40 | 3.19 | person | ✅ |
 
-报告：`artifacts/indoor_vgoal_eval_20260902_vgoal_vision.json`  
-commits：vgoal `07e6e9e` · indoor collector `96e3cc5`（`terminal_dock` 默认开，F-cap 不变）
+报告：`artifacts/indoor_vgoal_eval_20260902_vgoal_standoff2.json`  
+commits：vgoal `81456ac` · indoor `f68481f`
 
-解读：YOLO 锁到走廊旁 COCO 目标并飞离 ann 航点；ann 到达门与「跟视觉目标」不一致。P0 需固定 `visual_prompt`/目标与航点对齐，或改评分到视觉目标距。
-
-**禁止**：GT dock 刷 vision PASS；乱改 YOLO 默认冒充原 vgoal。
+**禁止**：用 ann 几何终点冒充 vision PASS；GT dock 刷分。
