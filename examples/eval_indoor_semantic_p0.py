@@ -58,15 +58,27 @@ class VisualGoalDeployPolicyWrapper:
 
     def __init__(self, vgoal_policy: VisualGoalWAMPolicy) -> None:
         self.vgoal_policy = vgoal_policy
+        self.policy_calls = 0
+        self.detect_hits = 0
+        self.last_det_name: Optional[str] = None
 
     def reset(self) -> None:
         self.vgoal_policy.reset()
+        self.policy_calls = 0
+        self.detect_hits = 0
+        self.last_det_name = None
 
     def bind_episode(self, episode: Optional[Dict[str, Any]]) -> None:
         return None
 
     def act(self, policy_view: Any) -> np.ndarray:
-        return self.vgoal_policy.act(policy_view)
+        action = self.vgoal_policy.act(policy_view)
+        self.policy_calls += 1
+        det = self.vgoal_policy.last_detection
+        if det is not None:
+            self.detect_hits += 1
+            self.last_det_name = str(det.class_name)
+        return action
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,7 +106,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--max-steps", type=int, default=250)
     p.add_argument("--takeoff-scan-steps", type=int, default=8)
-    p.add_argument("--planner", action="store_true", default=True)
+    p.add_argument(
+        "--planner",
+        action="store_true",
+        default=False,
+        help="Enable collector imagination planner (uses ann GT goal; off for true vision)",
+    )
     p.add_argument("--planner-horizon", type=int, default=5)
     p.add_argument("--step-hz", type=float, default=5.0)
     p.add_argument("--fov-deg", type=float, default=80.0)
@@ -211,7 +228,7 @@ def main() -> int:
     policy_wrapped = VisualGoalDeployPolicyWrapper(vgoal_policy)
 
     buf = ReplayBuffer(capacity_episodes=4, seed=0)
-    collector = RolloutCollector(
+    collector_kwargs: Dict[str, Any] = dict(
         env=env,
         policy=policy_wrapped,
         buffer=buf,
@@ -224,7 +241,15 @@ def main() -> int:
         planner=planner,
         dynamics=dynamics,
         takeoff_scan_steps=int(args.takeoff_scan_steps),
+        terminal_dock=False,
     )
+    try:
+        collector = RolloutCollector(**collector_kwargs)
+    except TypeError as e:
+        raise SystemExit(
+            "indoor RolloutCollector lacks terminal_dock=; sync aerial-indoor-wam "
+            f"collector.py before true vision eval ({e})"
+        ) from e
 
     ann_path = Path(args.annotation)
     if not ann_path.is_absolute():
@@ -241,12 +266,14 @@ def main() -> int:
     progress_ratios: List[float] = []
 
     logger.info(
-        "Indoor vgoal eval: n=%s success_dist=%.2f yolo=%s conf=%.2f imgsz=%s",
+        "Indoor vgoal TRUE vision: n=%s success_dist=%.2f yolo=%s conf=%.2f imgsz=%s "
+        "terminal_dock=False planner=%s",
         n_eval,
         args.success_dist,
         args.yolo_weights,
         args.yolo_conf,
         args.yolo_imgsz,
+        bool(planner),
     )
 
     for idx, r in enumerate(routes_to_eval):
@@ -259,7 +286,9 @@ def main() -> int:
             "pos": [start_pos.tolist(), goal_pos.tolist()],
             "yaw": [start_yaw, start_yaw],
             "gpt_instruction": r.get("gpt_instruction", ""),
+            "trajectory_id": r.get("trajectory_id", ""),
         }
+        policy_wrapped.reset()
         ep_trans, _stats = collector.collect_episode(ep_dict)
         if not ep_trans:
             logger.warning("Route %02d skipped (spawn collision).", idx + 1)
@@ -279,18 +308,24 @@ def main() -> int:
             n_severe_coll += 1
         progress_ratios.append(prog)
         logger.info(
-            "Route %02d/%02d steps=%d d0=%.2f d_end=%.2f arrived=%s coll=%s",
+            "Route %02d/%02d id=%s steps=%d d0=%.2f d_end=%.2f arrived=%s coll=%s "
+            "policy_calls=%d detect_hits=%d last_det=%s",
             idx + 1,
             n_eval,
+            r.get("trajectory_id", ""),
             len(ep_trans),
             d0,
             d_end,
             arrived,
             collided,
+            policy_wrapped.policy_calls,
+            policy_wrapped.detect_hits,
+            policy_wrapped.last_det_name,
         )
         results.append(
             {
                 "route_idx": idx,
+                "trajectory_id": r.get("trajectory_id", ""),
                 "steps": len(ep_trans),
                 "d_start_m": d0,
                 "d_end_m": d_end,
@@ -298,6 +333,9 @@ def main() -> int:
                 "arrived": arrived,
                 "collided": collided,
                 "progress_ratio": prog,
+                "policy_calls": int(policy_wrapped.policy_calls),
+                "detect_hits": int(policy_wrapped.detect_hits),
+                "last_det": policy_wrapped.last_det_name,
             }
         )
 
@@ -309,6 +347,9 @@ def main() -> int:
             visual_prompt="yolo_coco_unfiltered",
             phase="P0",
         ),
+        "control_mode": "vision_policy",
+        "terminal_dock": False,
+        "collector_planner": bool(planner),
         "timestamp": time.time(),
         "indoor_root": str(indoor),
         "annotation": str(ann_path),
@@ -320,6 +361,7 @@ def main() -> int:
         "arrival_rate": float(n_arrived / max(1, len(results))),
         "severe_collision_rate": float(n_severe_coll / max(1, len(results))),
         "mean_progress_ratio": float(np.mean(progress_ratios)) if progress_ratios else 0.0,
+        "mean_policy_calls": float(np.mean([e["policy_calls"] for e in results])) if results else 0.0,
         "episodes": results,
     }
 
@@ -329,10 +371,11 @@ def main() -> int:
     out_p.parent.mkdir(parents=True, exist_ok=True)
     out_p.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     logger.info(
-        "done arrival=%.1f%% (%d/%d) out=%s",
+        "done arrival=%.1f%% (%d/%d) mean_policy_calls=%.1f out=%s",
         100.0 * summary["arrival_rate"],
         n_arrived,
         len(results),
+        summary["mean_policy_calls"],
         out_p,
     )
     return 0
