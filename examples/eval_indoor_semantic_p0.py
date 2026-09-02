@@ -20,11 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from vgoal.bridge import VisualGoalPolicyConfig, VisualGoalWAMPolicy
 from vgoal.detector import MockDetector, OpenVocabPromptDetector
 from vgoal.geometry import CameraIntrinsics, bbox_to_goal_rel
 from vgoal.report_meta import semantic_nav_report_fields
-from vgoal.tracker import TargetState
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("indoor_semantic_p0")
@@ -263,27 +261,15 @@ def _run_one_episode(
     visual_prompt: str,
     seed: int,
 ) -> Dict[str, Any]:
+    """P0 loop: YOLO → airsim depth → vision goal_rel → indoor act_latent (+ shield)."""
     from experiments.aerial.rl.collector import clip_body_delta
+    from experiments.aerial.rl.goal_features import body_vel_from_obs
 
     goal_gt = np.asarray(seg["pos"][1], dtype=np.float64)  # dual-report only
     obs = env.reset({"pos": seg["pos"], "yaw": seg["yaw"], "gpt_instruction": seg["gpt_instruction"]})
     if obs is None or getattr(obs, "rgb", None) is None:
         return {"seed": seed, "ok": False, "fail_reason": "reset_failed", "arrived_vision": False}
 
-    vcfg = VisualGoalPolicyConfig(dt=1.0 / step_hz, search_fwd_speed=0.0, search_yaw_rate=0.0)
-    # P0: no search motion — if miss, fail
-    policy = VisualGoalWAMPolicy(
-        dynamics=dynamics,
-        actor_critic=actor,
-        detector=detector,
-        depth_predictor=None,  # use obs.depth (airsim_depth)
-        safety_shield=None,
-        planner=None,
-        config=vcfg,
-    )
-    policy.reset()
-
-    # Require detection on first frame (in-FOV contract)
     first = detector.detect(np.asarray(obs.rgb, dtype=np.uint8))
     if first is None:
         return {
@@ -301,14 +287,28 @@ def _run_one_episode(
     if hasattr(shield, "reset"):
         shield.reset()
 
+    K = CameraIntrinsics.from_fov(80.0, width=int(obs.rgb.shape[1]), height=int(obs.rgb.shape[0]))
+    latent = np.asarray(dynamics.encode(obs), dtype=np.float64)
+    prev_act: Optional[np.ndarray] = None
     d_vis = float("nan")
     step_i = 0
-    for step_i in range(max_steps):
-        action = np.asarray(policy.act(obs), dtype=np.float64).reshape(4)
-        action = clip_body_delta(action, limits)
+    last_cls = first.class_name
 
-        # If still searching despite P0 — treat as miss mid-flight
-        if policy.last_target_state == TargetState.SEARCHING or policy.last_goal_rel is None:
+    for step_i in range(max_steps):
+        rgb = np.asarray(obs.rgb, dtype=np.uint8)
+        h, w = rgb.shape[:2]
+        if w != K.width or h != K.height:
+            K = CameraIntrinsics.from_fov(80.0, width=w, height=h)
+
+        hit = detector.detect(rgb)
+        vision_gr = None
+        if hit is not None:
+            last_cls = hit.class_name
+            depth = getattr(obs, "depth", None)
+            if depth is not None:
+                vision_gr = bbox_to_goal_rel(hit.bbox, np.asarray(depth, dtype=np.float32), K, src_shape=(w, h))
+
+        if vision_gr is None:
             return {
                 "seed": seed,
                 "ok": True,
@@ -324,22 +324,63 @@ def _run_one_episode(
                 },
             }
 
+        d_vis = float(np.linalg.norm(vision_gr[:3]))
+        if d_vis <= success_dist:
+            break
+
+        if hasattr(actor, "act_latent"):
+            action = np.asarray(
+                actor.act_latent(latent, goal_rel=vision_gr, deterministic=True),
+                dtype=np.float64,
+            ).reshape(4)
+        else:
+            heading_err = float(np.arctan2(vision_gr[1], vision_gr[0]))
+            action = np.array(
+                [
+                    float(np.clip(vision_gr[0] * 0.25, 0.05, limits[0])),
+                    0.0,
+                    0.0,
+                    float(np.clip(heading_err * 0.4, -limits[3], limits[3])),
+                ],
+                dtype=np.float64,
+            )
+        action = clip_body_delta(action, limits)
+
+        wm_out = None
+        try:
+            wm_out = dynamics.step(
+                latent,
+                action,
+                goal_rel=vision_gr,
+                body_vel=body_vel_from_obs(obs),
+            )
+        except TypeError:
+            wm_out = dynamics.step(latent, action)
+
         if shield is not None:
             apply_fn = getattr(shield, "apply_action", None)
             if callable(apply_fn):
-                action, _ = apply_fn(action, obs, wm_out=None, limits=limits)
+                action, _ = apply_fn(action, obs, wm_out=wm_out, limits=limits)
 
         next_obs, _info = env.step(action)
+        if wm_out is not None and hasattr(wm_out, "z_next"):
+            latent = np.asarray(wm_out.z_next, dtype=np.float64)
+        else:
+            latent = np.asarray(dynamics.encode(next_obs), dtype=np.float64)
         obs = next_obs
-        gr = policy.last_goal_rel
-        d_vis = float(np.linalg.norm(gr[:3])) if gr is not None else float("nan")
-        if d_vis <= success_dist:
-            break
+        prev_act = action.copy()
         if bool(getattr(obs, "collided", False)):
             break
 
+    # final vision distance
+    hit = detector.detect(np.asarray(obs.rgb, dtype=np.uint8))
+    if hit is not None and getattr(obs, "depth", None) is not None:
+        gr = bbox_to_goal_rel(hit.bbox, np.asarray(obs.depth, dtype=np.float32), K)
+        if gr is not None:
+            d_vis = float(np.linalg.norm(gr[:3]))
+
     d_gt = float(np.linalg.norm(np.asarray(obs.position, dtype=np.float64) - goal_gt))
-    arrived_vision = bool(d_vis <= success_dist)
+    arrived_vision = bool(np.isfinite(d_vis) and d_vis <= success_dist)
     return {
         "seed": seed,
         "ok": True,
@@ -355,7 +396,7 @@ def _run_one_episode(
             "confidence": first.confidence,
             "bbox": first.bbox.tolist(),
         },
-        "last_class": getattr(policy.last_detection, "class_name", None),
+        "last_class": last_cls,
         "goal_from": "vision",
     }
 
