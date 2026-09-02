@@ -3,7 +3,8 @@
 set -euo pipefail
 VGOAL_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 INDOOR_ROOT="${AERIAL_INDOOR_ROOT:-/home/yao/aerial-indoor-wam}"
-STAMP="${STAMP:-20260902_vgoal}"
+STAMP="${STAMP:-20260902_vgoal_sg}"
+ANN="${ANN:-building99_indoor_short_routes_clean_sg.json}"
 OUT="${OUT:-$VGOAL_ROOT/artifacts/indoor_vgoal_eval_${STAMP}.json}"
 
 cd "$INDOOR_ROOT"
@@ -25,6 +26,7 @@ echo "[indoor_vgoal] indoor=$INDOOR_ROOT vgoal=$VGOAL_ROOT $(date -Is)" | tee "$
 cd "$VGOAL_ROOT"
 $AERIAL_PY examples/eval_indoor_semantic_p0.py \
   --indoor-root "$INDOOR_ROOT" \
+  --annotation "$ANN" \
   --device cuda \
   --episodes "${EPISODES:-3}" \
   --success-dist "${SUCCESS_DIST:-0.50}" \

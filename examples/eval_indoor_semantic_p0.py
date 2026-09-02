@@ -86,7 +86,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional depth head ckpt; empty = use AirSim depth via obs.depth",
     )
-    p.add_argument("--annotation", default="building99_indoor_short_routes_clean_e.json")
+    p.add_argument(
+        "--annotation",
+        default="building99_indoor_short_routes_clean_sg.json",
+        help="Building99 route ann (clean_sg = west/south/east, n=3)",
+    )
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--max-steps", type=int, default=250)
     p.add_argument("--takeoff-scan-steps", type=int, default=8)
