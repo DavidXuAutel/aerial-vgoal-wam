@@ -10,6 +10,8 @@ from typing import List, Optional, Sequence, Union
 
 import numpy as np
 
+from vgoal.prompt_classes import classes_from_visual_prompt
+
 
 @dataclass
 class DetectionResult:
@@ -150,3 +152,102 @@ class YOLOTargetDetector(BaseDetector):
         """Detect the single best (highest confidence) target object."""
         all_matches = self.detect_all(rgb)
         return all_matches[0] if len(all_matches) > 0 else None
+
+
+class OpenVocabPromptDetector(BaseDetector):
+    """Prompt-conditioned detector reusing YOLO / YOLO-World.
+
+    * If ``inner`` is provided (tests), detect delegates to it.
+    * If ``model_path`` contains ``\"world\"``, load ultralytics YOLO-World and
+      ``set_classes`` from the visual prompt.
+    * Otherwise wrap :class:`YOLOTargetDetector` with COCO class name filter.
+    """
+
+    def __init__(
+        self,
+        visual_prompt: str,
+        *,
+        model_path: str = "yolov8n.pt",
+        conf_threshold: float = 0.4,
+        imgsz: int = 640,
+        device: str = "cpu",
+        inner: Optional[BaseDetector] = None,
+    ) -> None:
+        self.visual_prompt = str(visual_prompt)
+        self.model_path = str(model_path)
+        self.conf_threshold = float(conf_threshold)
+        self.imgsz = int(imgsz)
+        self.device = str(device)
+        self._inner = inner
+        self._world_model = None
+        self._yolo_wrap: Optional[YOLOTargetDetector] = None
+        if self._inner is None:
+            self._rebuild_backend()
+
+    def set_visual_prompt(self, prompt: str) -> None:
+        self.visual_prompt = str(prompt)
+        if self._inner is None:
+            self._rebuild_backend()
+
+    def _classes(self) -> List[str]:
+        return classes_from_visual_prompt(self.visual_prompt)
+
+    def _rebuild_backend(self) -> None:
+        classes = self._classes()
+        if "world" in self.model_path.lower():
+            self._yolo_wrap = None
+            self._world_model = None  # lazy
+            self._world_classes = classes
+        else:
+            self._world_model = None
+            self._yolo_wrap = YOLOTargetDetector(
+                model_path=self.model_path,
+                target_classes=classes or None,
+                conf_threshold=self.conf_threshold,
+                imgsz=self.imgsz,
+                device=self.device,
+            )
+
+    def _lazy_world(self) -> None:
+        if self._world_model is not None:
+            return
+        try:
+            from ultralytics import YOLO
+        except ImportError as e:
+            raise ImportError(
+                "ultralytics is required for YOLO-World. Install via `pip install ultralytics`"
+            ) from e
+        self._world_model = YOLO(self.model_path)
+        classes = getattr(self, "_world_classes", self._classes())
+        if classes and hasattr(self._world_model, "set_classes"):
+            self._world_model.set_classes(classes)
+
+    def detect(self, rgb: np.ndarray) -> Optional[DetectionResult]:
+        if self._inner is not None:
+            return self._inner.detect(rgb)
+        if "world" in self.model_path.lower():
+            self._lazy_world()
+            results = self._world_model(
+                rgb,
+                conf=self.conf_threshold,
+                imgsz=self.imgsz,
+                device=self.device,
+                verbose=False,
+            )
+            if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+                return None
+            r = results[0]
+            names = r.names or {}
+            boxes = r.boxes.xyxy.cpu().numpy()
+            confs = r.boxes.conf.cpu().numpy()
+            classes = r.boxes.cls.cpu().numpy().astype(int)
+            best_i = int(np.argmax(confs))
+            cls_id = int(classes[best_i])
+            return DetectionResult(
+                bbox=np.asarray(boxes[best_i], dtype=np.float32),
+                confidence=float(confs[best_i]),
+                class_id=cls_id,
+                class_name=str(names.get(cls_id, str(cls_id))),
+            )
+        assert self._yolo_wrap is not None
+        return self._yolo_wrap.detect(rgb)

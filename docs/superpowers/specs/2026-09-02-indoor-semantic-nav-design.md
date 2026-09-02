@@ -1,8 +1,8 @@
 # Indoor Semantic Nav (Method B) — Design
 
 > **Date**: 2026-09-02  
-> **Home project**: `aerial-vgoal-wam` (separate from `aerial-indoor-wam`)  
-> **Status**: approved direction (B + P0→P1→P2); awaiting plan then implement  
+> **Home project**: `aerial-vgoal-wam` (**reuse** `vgoal/` — not a third stack)  
+> **Status**: P0 implementing · [`../plans/2026-09-02-indoor-semantic-nav-p0.md`](../plans/2026-09-02-indoor-semantic-nav-p0.md)  
 > **Depends on**: Aerial indoor Stick F-cap ✅ (gt_proxy probe); outdoor Phase-2 / F4 domain FT **not** required for this track
 
 ## 1. Goal
