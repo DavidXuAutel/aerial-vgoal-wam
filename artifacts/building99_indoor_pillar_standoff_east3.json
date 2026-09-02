@@ -1,0 +1,20 @@
+[
+  {
+    "trajectory_id": "B99_lobby_pillar_east_a",
+    "gpt_instruction": "Find a lobby pillar and stop 1m in front",
+    "pos": [[1.0, 0.0, 1.8], [1.0, 0.0, 1.8]],
+    "yaw": [0.0, 0.0]
+  },
+  {
+    "trajectory_id": "B99_lobby_pillar_east_b",
+    "gpt_instruction": "Find a lobby pillar and stop 1m in front",
+    "pos": [[1.2, 0.2, 1.8], [1.2, 0.2, 1.8]],
+    "yaw": [0.1, 0.1]
+  },
+  {
+    "trajectory_id": "B99_lobby_pillar_east_c",
+    "gpt_instruction": "Find a lobby pillar and stop 1m in front",
+    "pos": [[0.8, -0.2, 1.8], [0.8, -0.2, 1.8]],
+    "yaw": [-0.1, -0.1]
+  }
+]

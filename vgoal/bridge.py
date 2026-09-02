@@ -38,6 +38,9 @@ class VisualGoalPolicyConfig:
     # Indoor object-goal: fly to a point this far in front of the detected object.
     # 0 keeps legacy outdoor behavior (goal_rel points at object surface).
     approach_standoff_m: float = 0.0
+    # When True and detector exposes detect_all, pick nearest-by-depth instance
+    # of the fixed class (avoid locking a far same-class object).
+    prefer_nearest_target: bool = False
 
 
 class VisualGoalWAMPolicy:
@@ -158,31 +161,58 @@ class VisualGoalWAMPolicy:
         if img_w != self.config.intrinsics.width or img_h != self.config.intrinsics.height:
             self.config.intrinsics = CameraIntrinsics.from_fov(80.0, width=img_w, height=img_h)
 
-        # Step 1: Detect visual target
-        det = self.detector.detect(rgb_arr)
-        self.last_detection = det
-
-        # Step 2: Extract/Predict depth & back-project to 3D goal_rel
+        # Step 1: Detect visual target (optional nearest-by-depth among fixed class)
+        det = None
         measured_goal_rel = None
         det_conf = 0.0
-        if det is not None:
-            d_target_direct = getattr(det, "direct_depth", None)
-            if d_target_direct is not None and d_target_direct > 0:
-                u_c = (det.bbox[0] + det.bbox[2]) * 0.5
-                v_c = (det.bbox[1] + det.bbox[3]) * 0.5
-                intr = self.config.intrinsics
-                x_cam = (u_c - intr.cx) * d_target_direct / intr.fx
-                y_cam = (v_c - intr.cy) * d_target_direct / intr.fy
-                measured_goal_rel = np.array([
-                    float(d_target_direct),
-                    float(-x_cam),
-                    float(-y_cam),
-                    float(np.sqrt(d_target_direct**2 + x_cam**2 + y_cam**2)),
-                ], dtype=np.float32)
-                det_conf = det.confidence
-            else:
-                depth_map = self._get_depth_map(obs)
-                if depth_map is not None:
+        depth_map = self._get_depth_map(obs)
+
+        detect_all = getattr(self.detector, "detect_all", None)
+        if bool(self.config.prefer_nearest_target) and callable(detect_all) and depth_map is not None:
+            cands = list(detect_all(rgb_arr) or [])
+            best = None
+            best_dist = float("inf")
+            best_gr = None
+            for cand in cands:
+                gr = bbox_to_goal_rel(
+                    cand.bbox,
+                    depth_map,
+                    self.config.intrinsics,
+                    src_shape=(img_w, img_h),
+                )
+                if gr is None:
+                    continue
+                dist = float(gr[3])
+                if dist < best_dist:
+                    best_dist = dist
+                    best = cand
+                    best_gr = gr
+            if best is not None and best_gr is not None:
+                det = best
+                if best_gr[0] > self.config.max_target_dist_m:
+                    scale = self.config.max_target_dist_m / best_gr[0]
+                    best_gr = best_gr * scale
+                    best_gr[3] = float(np.linalg.norm(best_gr[:3]))
+                measured_goal_rel = best_gr
+                det_conf = float(best.confidence)
+        else:
+            det = self.detector.detect(rgb_arr)
+            if det is not None:
+                d_target_direct = getattr(det, "direct_depth", None)
+                if d_target_direct is not None and d_target_direct > 0:
+                    u_c = (det.bbox[0] + det.bbox[2]) * 0.5
+                    v_c = (det.bbox[1] + det.bbox[3]) * 0.5
+                    intr = self.config.intrinsics
+                    x_cam = (u_c - intr.cx) * d_target_direct / intr.fx
+                    y_cam = (v_c - intr.cy) * d_target_direct / intr.fy
+                    measured_goal_rel = np.array([
+                        float(d_target_direct),
+                        float(-x_cam),
+                        float(-y_cam),
+                        float(np.sqrt(d_target_direct**2 + x_cam**2 + y_cam**2)),
+                    ], dtype=np.float32)
+                    det_conf = det.confidence
+                elif depth_map is not None:
                     gr = bbox_to_goal_rel(
                         det.bbox,
                         depth_map,
@@ -197,10 +227,11 @@ class VisualGoalWAMPolicy:
                         measured_goal_rel = gr
                         det_conf = det.confidence
 
+        self.last_detection = det
         self.last_object_goal_rel = (
             None if measured_goal_rel is None else np.asarray(measured_goal_rel, dtype=np.float32).copy()
         )
-        # Indoor: object hit → standoff waypoint (e.g. 1 m in front of fridge).
+        # Indoor: object hit → standoff waypoint (e.g. 1 m in front of pillar).
         if measured_goal_rel is not None and float(self.config.approach_standoff_m) > 0.0:
             measured_goal_rel = apply_approach_standoff(
                 measured_goal_rel, float(self.config.approach_standoff_m)

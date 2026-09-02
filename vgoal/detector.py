@@ -251,3 +251,43 @@ class OpenVocabPromptDetector(BaseDetector):
             )
         assert self._yolo_wrap is not None
         return self._yolo_wrap.detect(rgb)
+
+    def detect_all(self, rgb: np.ndarray) -> List[DetectionResult]:
+        """Return all prompt-class hits (needed for nearest-instance selection)."""
+        if self._inner is not None:
+            inner_all = getattr(self._inner, "detect_all", None)
+            if callable(inner_all):
+                return list(inner_all(rgb) or [])
+            one = self._inner.detect(rgb)
+            return [one] if one is not None else []
+        if "world" in self.model_path.lower():
+            self._lazy_world()
+            results = self._world_model(
+                rgb,
+                conf=self.conf_threshold,
+                imgsz=self.imgsz,
+                device=self.device,
+                verbose=False,
+            )
+            if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+                return []
+            r = results[0]
+            names = r.names or {}
+            boxes = r.boxes.xyxy.cpu().numpy()
+            confs = r.boxes.conf.cpu().numpy()
+            classes = r.boxes.cls.cpu().numpy().astype(int)
+            out: List[DetectionResult] = []
+            for i in range(len(boxes)):
+                cls_id = int(classes[i])
+                out.append(
+                    DetectionResult(
+                        bbox=np.asarray(boxes[i], dtype=np.float32),
+                        confidence=float(confs[i]),
+                        class_id=cls_id,
+                        class_name=str(names.get(cls_id, str(cls_id))),
+                    )
+                )
+            out.sort(key=lambda d: d.confidence, reverse=True)
+            return out
+        assert self._yolo_wrap is not None
+        return self._yolo_wrap.detect_all(rgb)

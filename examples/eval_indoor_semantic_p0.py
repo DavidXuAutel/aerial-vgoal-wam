@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vgoal.bridge import VisualGoalPolicyConfig, VisualGoalWAMPolicy
-from vgoal.detector import YOLOTargetDetector
+from vgoal.detector import OpenVocabPromptDetector, YOLOTargetDetector
 from vgoal.geometry import CameraIntrinsics
 from vgoal.report_meta import semantic_nav_report_fields
 from vgoal.tracker import TargetState, TrackerConfig
@@ -156,9 +156,27 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--yolo-imgsz", type=int, default=640)
     p.add_argument(
         "--target-classes",
-        required=True,
-        help="Required fixed COCO class(es), e.g. 'potted plant' or 'refrigerator'. "
-        "Unfiltered / switching targets is not a valid indoor object-goal trial.",
+        default="",
+        help="Fixed COCO class filter when not using YOLO-World. "
+        "Prefer --visual-prompt with --yolo-weights *world* for open-vocab (e.g. pillar).",
+    )
+    p.add_argument(
+        "--visual-prompt",
+        default="",
+        help="Fixed open-vocab prompt (e.g. 'pillar'). Uses OpenVocabPromptDetector; "
+        "with *world* weights this is the exact object class.",
+    )
+    p.add_argument(
+        "--prefer-nearest",
+        action="store_true",
+        default=True,
+        help="Among fixed-class hits, lock the nearest-by-depth instance (default on)",
+    )
+    p.add_argument(
+        "--no-prefer-nearest",
+        action="store_true",
+        default=False,
+        help="Disable nearest-instance selection",
     )
     p.add_argument(
         "--out-report",
@@ -237,17 +255,33 @@ def main() -> int:
 
     intrinsics = CameraIntrinsics.from_fov(fov_deg=args.fov_deg, width=224, height=224)
     yolo_device = "0" if str(args.device).startswith("cuda") else "cpu"
+    visual_prompt = str(args.visual_prompt).strip()
     class_filter = [c.strip() for c in str(args.target_classes).split(",") if c.strip()]
-    if not class_filter:
-        raise SystemExit("--target-classes is required (fixed object). Empty/unfiltered is invalid.")
-    target_detector = YOLOTargetDetector(
-        model_path=args.yolo_weights,
-        target_classes=class_filter,
-        conf_threshold=float(args.yolo_conf),
-        imgsz=int(args.yolo_imgsz),
-        device=yolo_device,
-    )
+    if not visual_prompt and not class_filter:
+        raise SystemExit(
+            "Need a fixed object: pass --visual-prompt 'pillar' (YOLO-World) "
+            "or --target-classes 'potted plant' (COCO). Unfiltered is invalid."
+        )
+    if visual_prompt:
+        target_detector = OpenVocabPromptDetector(
+            visual_prompt=visual_prompt,
+            model_path=args.yolo_weights,
+            conf_threshold=float(args.yolo_conf),
+            imgsz=int(args.yolo_imgsz),
+            device=yolo_device,
+        )
+        prompt_label = visual_prompt
+    else:
+        target_detector = YOLOTargetDetector(
+            model_path=args.yolo_weights,
+            target_classes=class_filter,
+            conf_threshold=float(args.yolo_conf),
+            imgsz=int(args.yolo_imgsz),
+            device=yolo_device,
+        )
+        prompt_label = ",".join(class_filter)
 
+    prefer_nearest = not bool(args.no_prefer_nearest)
     tracker_cfg = TrackerConfig(
         success_dist_m=float(args.success_dist),
         max_occlusion_s=120.0,
@@ -260,6 +294,7 @@ def main() -> int:
         dt=1.0 / float(args.step_hz),
         use_planner=False,
         approach_standoff_m=float(args.standoff_m),
+        prefer_nearest_target=prefer_nearest,
     )
     vgoal_policy = VisualGoalWAMPolicy(
         dynamics=dynamics,
@@ -312,14 +347,15 @@ def main() -> int:
 
     logger.info(
         "Indoor vgoal object-standoff: n=%s standoff=%.2fm success=%.2fm yolo=%s conf=%.2f "
-        "imgsz=%s classes=%s terminal_dock=False",
+        "imgsz=%s prompt=%s prefer_nearest=%s terminal_dock=False",
         n_eval,
         args.standoff_m,
         args.success_dist,
         args.yolo_weights,
         args.yolo_conf,
         args.yolo_imgsz,
-        class_filter,
+        prompt_label,
+        prefer_nearest,
     )
 
     for idx, r in enumerate(routes_to_eval):
@@ -415,7 +451,7 @@ def main() -> int:
     summary = {
         **semantic_nav_report_fields(
             depth_source="airsim_depth" if depth_pred is None else "depth_head",
-            visual_prompt=",".join(class_filter),
+            visual_prompt=prompt_label,
             phase="P0",
         ),
         "control_mode": "vision_standoff",
@@ -423,6 +459,7 @@ def main() -> int:
         "approach_standoff_m": float(args.standoff_m),
         "success_dist_m": float(args.success_dist),
         "success_metric": "standoff_waypoint",
+        "prefer_nearest_target": prefer_nearest,
         "collector_planner": bool(planner),
         "timestamp": time.time(),
         "indoor_root": str(indoor),
@@ -430,7 +467,7 @@ def main() -> int:
         "yolo_weights": args.yolo_weights,
         "yolo_conf": float(args.yolo_conf),
         "yolo_imgsz": int(args.yolo_imgsz),
-        "target_classes": list(class_filter),
+        "target_classes": list(class_filter) if class_filter else [prompt_label],
         "n_episodes": len(results),
         "arrival_rate": float(n_arrived / max(1, len(results))),
         "severe_collision_rate": float(n_severe_coll / max(1, len(results))),
