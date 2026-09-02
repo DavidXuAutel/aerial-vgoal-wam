@@ -60,6 +60,7 @@ class VisualGoalDeployPolicyWrapper:
         self.policy_calls = 0
         self.detect_hits = 0
         self.last_det_name: Optional[str] = None
+        self.last_det_wh: Optional[tuple] = None
         self.ever_arrived = False
         self.min_standoff_goal_dist = float("inf")
         self.min_object_dist = float("inf")
@@ -71,6 +72,7 @@ class VisualGoalDeployPolicyWrapper:
         self.policy_calls = 0
         self.detect_hits = 0
         self.last_det_name = None
+        self.last_det_wh = None
         self.ever_arrived = False
         self.min_standoff_goal_dist = float("inf")
         self.min_object_dist = float("inf")
@@ -87,6 +89,11 @@ class VisualGoalDeployPolicyWrapper:
         if det is not None:
             self.detect_hits += 1
             self.last_det_name = str(det.class_name)
+            # Log YOLO branch resolution once (should be capture WH, not 224)
+            yolo = getattr(policy_view, "rgb_yolo", None)
+            if yolo is not None:
+                arr = np.asarray(yolo)
+                self.last_det_wh = (int(arr.shape[1]), int(arr.shape[0]))
         obj = self.vgoal_policy.last_object_goal_rel
         if obj is not None:
             od = float(obj[3]) if len(obj) > 3 else float(np.linalg.norm(obj[:3]))
@@ -209,6 +216,8 @@ def main() -> int:
     cfg.setdefault("env", {})["backend"] = "airsim"
     cfg["env"]["step_hz"] = float(args.step_hz)
     cfg["env"]["grab_depth"] = True
+    # Single-camera fan-out: capture → rgb_vio / rgb(WAM 224) / rgb_yolo (native 640)
+    cfg["env"]["fanout_rgb"] = True
     env = _build_env(cfg["env"])
 
     reward_cfg = RewardConfig(**(cfg.get("reward") or {}))
@@ -405,7 +414,7 @@ def main() -> int:
         progress_ratios.append(prog)
         logger.info(
             "Route %02d/%02d id=%s steps=%d vision_arrived=%s coll=%s "
-            "min_standoff_goal=%.2f min_obj=%.2f last_det=%s policy_calls=%d detect_hits=%d "
+            "min_standoff_goal=%.2f min_obj=%.2f last_det=%s yolo_wh=%s policy_calls=%d detect_hits=%d "
             "(ann_dual d0=%.2f d_end=%.2f)",
             idx + 1,
             n_eval,
@@ -416,6 +425,7 @@ def main() -> int:
             gmin if gmin < float("inf") else -1.0,
             policy_wrapped.min_object_dist if policy_wrapped.min_object_dist < float("inf") else -1.0,
             policy_wrapped.last_det_name,
+            policy_wrapped.last_det_wh,
             policy_wrapped.policy_calls,
             policy_wrapped.detect_hits,
             d_ann0,
@@ -439,8 +449,9 @@ def main() -> int:
                 "last_object_dist_m": policy_wrapped.last_object_dist,
                 "policy_calls": int(policy_wrapped.policy_calls),
                 "detect_hits": int(policy_wrapped.detect_hits),
-                "last_det": policy_wrapped.last_det_name,
-                "ann_dual_d_start_m": d_ann0,
+            "last_det": policy_wrapped.last_det_name,
+            "yolo_rgb_wh": list(policy_wrapped.last_det_wh) if policy_wrapped.last_det_wh else None,
+            "ann_dual_d_start_m": d_ann0,
                 "ann_dual_d_end_m": d_ann_end,
                 "progress_ratio": prog,
             }

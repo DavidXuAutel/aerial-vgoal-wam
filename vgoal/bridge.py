@@ -152,14 +152,22 @@ class VisualGoalWAMPolicy:
 
     def act(self, obs: Any) -> np.ndarray:
         """Process observation, detect & track visual goal, query WAM actor policy & planner."""
-        rgb = getattr(obs, "rgb", None)
-        if rgb is None:
+        rgb_wam = getattr(obs, "rgb", None)
+        if rgb_wam is None:
             raise ValueError("Observation missing 'rgb' image.")
-        rgb_arr = np.asarray(rgb, dtype=np.uint8)
-        img_h, img_w = rgb_arr.shape[:2]
+        rgb_wam_arr = np.asarray(rgb_wam, dtype=np.uint8)
+        # Single-camera fan-out: YOLO consumes ``rgb_yolo`` (native capture, e.g.
+        # 640×480), not the WAM 224 branch. Fall back to ``rgb`` only if fan-out
+        # is absent (outdoor / legacy).
+        rgb_det = getattr(obs, "rgb_yolo", None)
+        rgb_det_arr = (
+            np.asarray(rgb_det, dtype=np.uint8) if rgb_det is not None else rgb_wam_arr
+        )
+        det_h, det_w = rgb_det_arr.shape[:2]
 
-        if img_w != self.config.intrinsics.width or img_h != self.config.intrinsics.height:
-            self.config.intrinsics = CameraIntrinsics.from_fov(80.0, width=img_w, height=img_h)
+        # Intrinsics match the detection image (YOLO branch), not WAM encode size.
+        if det_w != self.config.intrinsics.width or det_h != self.config.intrinsics.height:
+            self.config.intrinsics = CameraIntrinsics.from_fov(80.0, width=det_w, height=det_h)
 
         # Step 1: Detect visual target (optional nearest-by-depth among fixed class)
         det = None
@@ -169,7 +177,7 @@ class VisualGoalWAMPolicy:
 
         detect_all = getattr(self.detector, "detect_all", None)
         if bool(self.config.prefer_nearest_target) and callable(detect_all) and depth_map is not None:
-            cands = list(detect_all(rgb_arr) or [])
+            cands = list(detect_all(rgb_det_arr) or [])
             best = None
             best_dist = float("inf")
             best_gr = None
@@ -178,7 +186,7 @@ class VisualGoalWAMPolicy:
                     cand.bbox,
                     depth_map,
                     self.config.intrinsics,
-                    src_shape=(img_w, img_h),
+                    src_shape=(det_w, det_h),
                 )
                 if gr is None:
                     continue
@@ -196,7 +204,7 @@ class VisualGoalWAMPolicy:
                 measured_goal_rel = best_gr
                 det_conf = float(best.confidence)
         else:
-            det = self.detector.detect(rgb_arr)
+            det = self.detector.detect(rgb_det_arr)
             if det is not None:
                 d_target_direct = getattr(det, "direct_depth", None)
                 if d_target_direct is not None and d_target_direct > 0:
@@ -217,7 +225,7 @@ class VisualGoalWAMPolicy:
                         det.bbox,
                         depth_map,
                         self.config.intrinsics,
-                        src_shape=(img_w, img_h),
+                        src_shape=(det_w, det_h),
                     )
                     if gr is not None:
                         if gr[0] > self.config.max_target_dist_m:
@@ -291,7 +299,7 @@ class VisualGoalWAMPolicy:
 
         try:
             from experiments.aerial.rl.env.obs import Observation
-            full_obs = Observation(rgb=rgb_arr, state=state_vec, t=cur_t, info=info_dict)
+            full_obs = Observation(rgb=rgb_wam_arr, state=state_vec, t=cur_t, info=info_dict)
         except ImportError:
             from dataclasses import dataclass
 
@@ -302,7 +310,7 @@ class VisualGoalWAMPolicy:
                 t: float
                 info: dict
 
-            full_obs = _FallbackObs(rgb=rgb_arr, state=state_vec, t=cur_t, info=info_dict)
+            full_obs = _FallbackObs(rgb=rgb_wam_arr, state=state_vec, t=cur_t, info=info_dict)
 
         # Step 6: Recurrent Latent Streaming (observe_and_advance)
         if (
