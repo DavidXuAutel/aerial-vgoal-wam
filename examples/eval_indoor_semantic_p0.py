@@ -119,12 +119,24 @@ def _ensure_indoor_path(indoor: Path) -> None:
         sys.path.insert(0, s)
 
 
+def _yolo_rgb(obs: Any) -> np.ndarray:
+    """Same-grab YOLO fan-out branch (not a second camera); fall back to WAM rgb."""
+    y = getattr(obs, "rgb_yolo", None)
+    if y is not None:
+        return np.asarray(y, dtype=np.uint8)
+    return np.asarray(obs.rgb, dtype=np.uint8)
+
+
 def run_airsim_p0(args: argparse.Namespace) -> Dict[str, Any]:
     indoor = _indoor_root(args.indoor_root)
     if not indoor.is_dir():
         raise FileNotFoundError(f"indoor root missing: {indoor}")
     _ensure_indoor_path(indoor)
     os.chdir(indoor)
+    # Prefer 640×480 single-cam capture for YOLO/VIO fan-out.
+    os.environ.setdefault("INDOOR_CAPTURE_W", "640")
+    os.environ.setdefault("INDOOR_CAPTURE_H", "480")
+    os.environ.setdefault("AIRSIM_FANOUT_RGB", "1")
 
     import yaml
     from experiments.aerial.rl.actor_critic import LatentActorCritic
@@ -138,6 +150,18 @@ def run_airsim_p0(args: argparse.Namespace) -> Dict[str, Any]:
     cfg.setdefault("env", {})["backend"] = "airsim"
     cfg["env"]["step_hz"] = float(args.step_hz)
     cfg["env"]["grab_depth"] = True
+    cfg["env"]["fanout_rgb"] = True
+    try:
+        from experiments.aerial.rl.indoor_capture import indoor_capture_wh, WAM_ENCODE_SIZE
+
+        cw, ch = indoor_capture_wh()
+        cfg["env"]["width"] = int(cw)
+        cfg["env"]["height"] = int(ch)
+        cfg["env"]["wam_encode_size"] = int(WAM_ENCODE_SIZE)
+    except Exception:
+        cfg["env"]["width"] = 640
+        cfg["env"]["height"] = 480
+        cfg["env"]["wam_encode_size"] = 224
 
     ann = Path(args.annotation)
     if not ann.is_absolute():
@@ -273,7 +297,7 @@ def _run_one_episode(
     if obs is None or getattr(obs, "rgb", None) is None:
         return {"seed": seed, "ok": False, "fail_reason": "reset_failed", "arrived_vision": False}
 
-    first = detector.detect(np.asarray(obs.rgb, dtype=np.uint8))
+    first = detector.detect(_yolo_rgb(obs))
     if first is None:
         return {
             "seed": seed,
@@ -284,13 +308,15 @@ def _run_one_episode(
             "steps": 0,
             "segment_name": seg["segment_name"],
             "detection0": None,
+            "rgb_yolo_shape": list(_yolo_rgb(obs).shape),
             "d_end_gt_side": float(np.linalg.norm(np.asarray(obs.position) - goal_gt)),
         }
 
     if hasattr(shield, "reset"):
         shield.reset()
 
-    K = CameraIntrinsics.from_fov(80.0, width=int(obs.rgb.shape[1]), height=int(obs.rgb.shape[0]))
+    y0 = _yolo_rgb(obs)
+    K = CameraIntrinsics.from_fov(80.0, width=int(y0.shape[1]), height=int(y0.shape[0]))
     latent = np.asarray(dynamics.encode(obs), dtype=np.float64)
     prev_act: Optional[np.ndarray] = None
     d_vis = float("nan")
@@ -298,7 +324,7 @@ def _run_one_episode(
     last_cls = first.class_name
 
     for step_i in range(max_steps):
-        rgb = np.asarray(obs.rgb, dtype=np.uint8)
+        rgb = _yolo_rgb(obs)
         h, w = rgb.shape[:2]
         if w != K.width or h != K.height:
             K = CameraIntrinsics.from_fov(80.0, width=w, height=h)
@@ -309,7 +335,12 @@ def _run_one_episode(
             last_cls = hit.class_name
             depth = getattr(obs, "depth", None)
             if depth is not None:
-                vision_gr = bbox_to_goal_rel(hit.bbox, np.asarray(depth, dtype=np.float32), K, src_shape=(w, h))
+                vision_gr = bbox_to_goal_rel(
+                    hit.bbox,
+                    np.asarray(depth, dtype=np.float32),
+                    K,
+                    src_shape=(w, h),
+                )
 
         if vision_gr is None:
             return {
@@ -376,9 +407,15 @@ def _run_one_episode(
             break
 
     # final vision distance
-    hit = detector.detect(np.asarray(obs.rgb, dtype=np.uint8))
+    hit = detector.detect(_yolo_rgb(obs))
     if hit is not None and getattr(obs, "depth", None) is not None:
-        gr = bbox_to_goal_rel(hit.bbox, np.asarray(obs.depth, dtype=np.float32), K)
+        yh, yw = _yolo_rgb(obs).shape[:2]
+        gr = bbox_to_goal_rel(
+            hit.bbox,
+            np.asarray(obs.depth, dtype=np.float32),
+            K,
+            src_shape=(yw, yh),
+        )
         if gr is not None:
             d_vis = float(np.linalg.norm(gr[:3]))
 
@@ -406,7 +443,10 @@ def _run_one_episode(
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Indoor semantic nav P0")
-    p.add_argument("--visual-prompt", default="potted plant,chair,couch,tv,bottle,book,vase,person")
+    p.add_argument(
+        "--visual-prompt",
+        default="refrigerator,potted plant,chair,couch,tv,bottle,book,vase,person,dining table",
+    )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--out", default="artifacts/indoor_semantic_p0_summary.json")
     p.add_argument("--indoor-root", default="")
@@ -427,7 +467,7 @@ def main() -> int:
     p.add_argument("--step-hz", type=float, default=5.0)
     p.add_argument("--device", default="cuda")
     p.add_argument("--yolo-weights", default="yolov8n.pt")
-    p.add_argument("--conf", type=float, default=0.35)
+    p.add_argument("--conf", type=float, default=0.12)
     args = p.parse_args()
 
     if args.dry_run:
