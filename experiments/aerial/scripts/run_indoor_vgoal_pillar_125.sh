@@ -16,8 +16,31 @@ cd "$INDOOR_ROOT"
 source experiments/aerial/scripts/env_4090.sh
 export AERIAL_INDOOR_ROOT="$INDOOR_ROOT"
 export AIRSIM_CAMERA=0 AIRSIM_VEHICLE=drone_1
+export AIRSIM_FANOUT_RGB=1
+export INDOOR_CAPTURE_W="${INDOOR_CAPTURE_W:-640}"
+export INDOOR_CAPTURE_H="${INDOOR_CAPTURE_H:-480}"
+export WAM_ENCODE_SIZE="${WAM_ENCODE_SIZE:-224}"
 
+# Single cam CaptureSettings must be 640×480; fan-out after grab (not dual cam).
+SETTINGS_INDOOR="${AIRSIM_PERSISTENT:-/home/yao/aerial_airsim_persistent}/AirSim/settings_indoor.json"
+if [[ -f "$SETTINGS_INDOOR" ]]; then
+  $AERIAL_PY experiments/aerial/scripts/patch_indoor_capture_res.py \
+    --settings "$SETTINGS_INDOOR" \
+    --w "$INDOOR_CAPTURE_W" --h "$INDOOR_CAPTURE_H"
+fi
+
+need_restart=0
 if ! pgrep -f 'Building_99/Binaries' >/dev/null || ! ss -ltn | grep -q 41451; then
+  need_restart=1
+elif [[ -L /home/yao/Documents/AirSim/settings.json ]]; then
+  cur="$(readlink -f /home/yao/Documents/AirSim/settings.json || true)"
+  [[ "$cur" == *settings_indoor.json ]] || need_restart=1
+fi
+# Force restart when FORCE_CAPTURE_RESTART=1 (settings WH changed under a live UE).
+if [[ "${FORCE_CAPTURE_RESTART:-0}" == "1" ]]; then
+  need_restart=1
+fi
+if [[ "$need_restart" == "1" ]]; then
   ON_SCREEN="${ON_SCREEN:-0}" bash experiments/aerial/scripts/recover_renderer_scene.sh building99 || true
   sleep 15
 fi

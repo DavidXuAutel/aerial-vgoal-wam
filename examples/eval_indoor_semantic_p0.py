@@ -216,8 +216,12 @@ def main() -> int:
     cfg.setdefault("env", {})["backend"] = "airsim"
     cfg["env"]["step_hz"] = float(args.step_hz)
     cfg["env"]["grab_depth"] = True
-    # Single-camera fan-out: capture → rgb_vio / rgb(WAM 224) / rgb_yolo (native 640)
+    # Single-camera fan-out: capture → rgb_vio / rgb(WAM 224) / rgb_yolo (native).
+    # Capture WH must match AirSim CaptureSettings (not the WAM encode size).
     cfg["env"]["fanout_rgb"] = True
+    cfg["env"]["width"] = int(os.environ.get("INDOOR_CAPTURE_W", "640"))
+    cfg["env"]["height"] = int(os.environ.get("INDOOR_CAPTURE_H", "480"))
+    cfg["env"]["wam_encode_size"] = int(os.environ.get("WAM_ENCODE_SIZE", "224"))
     env = _build_env(cfg["env"])
 
     reward_cfg = RewardConfig(**(cfg.get("reward") or {}))
