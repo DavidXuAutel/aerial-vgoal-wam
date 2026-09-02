@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
-# Indoor semantic P0 on 125 — Building99 + indoor ckpts + vgoal detector.
+# Wire original vgoal eval to aerial-indoor-wam on 125.
 set -euo pipefail
 VGOAL_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 INDOOR_ROOT="${AERIAL_INDOOR_ROOT:-/home/yao/aerial-indoor-wam}"
-STAMP="${STAMP:-20260902_p0}"
-OUT="${OUT:-$VGOAL_ROOT/artifacts/indoor_semantic_p0_summary_${STAMP}.json}"
-PROMPT="${VISUAL_PROMPT:-refrigerator,potted plant,chair,couch,tv,bottle,book,vase,person,dining table}"
-export INDOOR_CAPTURE_W="${INDOOR_CAPTURE_W:-640}"
-export INDOOR_CAPTURE_H="${INDOOR_CAPTURE_H:-480}"
-export AIRSIM_FANOUT_RGB=1
-export WAM_ENCODE_SIZE="${WAM_ENCODE_SIZE:-224}"
+STAMP="${STAMP:-20260902_vgoal}"
+OUT="${OUT:-$VGOAL_ROOT/artifacts/indoor_vgoal_eval_${STAMP}.json}"
 
 cd "$INDOOR_ROOT"
 # shellcheck disable=SC1091
@@ -23,46 +18,20 @@ if ! pgrep -f 'Building_99/Binaries' >/dev/null || ! ss -ltn | grep -q 41451; th
 fi
 ss -ltn | grep -q 41451
 
-# Force single-cam CaptureSettings to indoor sensing res (fan-out derives WAM 224).
-python3 - <<'PY'
-import json
-from pathlib import Path
-p = Path("/home/yao/aerial_airsim_persistent/AirSim/settings_indoor.json")
-if not p.is_file():
-    raise SystemExit("missing settings_indoor.json")
-d = json.loads(p.read_text())
-changed = False
-w, h = int(__import__("os").environ.get("INDOOR_CAPTURE_W", "640")), int(__import__("os").environ.get("INDOOR_CAPTURE_H", "480"))
-
-def fix(caps):
-    global changed
-    for c in caps:
-        if int(c.get("ImageType", -1)) == 0:
-            if c.get("Width") != w or c.get("Height") != h:
-                c["Width"] = w
-                c["Height"] = h
-                changed = True
-
-fix(d["CameraDefaults"]["CaptureSettings"])
-for cam in d["Vehicles"]["drone_1"]["Cameras"].values():
-    fix(cam["CaptureSettings"])
-if changed:
-    p.write_text(json.dumps(d, indent=2) + "\n")
-    print(f"[semantic_p0] settings Scene forced {w}x{h}")
-PY
-
 mkdir -p "$VGOAL_ROOT/artifacts" "$VGOAL_ROOT/logs"
-LOG="$VGOAL_ROOT/logs/indoor_semantic_p0_${STAMP}.log"
-echo "[semantic_p0] indoor=$INDOOR_ROOT vgoal=$VGOAL_ROOT prompt=$PROMPT $(date -Is)" | tee "$LOG"
+LOG="$VGOAL_ROOT/logs/indoor_vgoal_${STAMP}.log"
+echo "[indoor_vgoal] indoor=$INDOOR_ROOT vgoal=$VGOAL_ROOT $(date -Is)" | tee "$LOG"
 
 cd "$VGOAL_ROOT"
 $AERIAL_PY examples/eval_indoor_semantic_p0.py \
   --indoor-root "$INDOOR_ROOT" \
-  --visual-prompt "$PROMPT" \
   --device cuda \
-  --seeds "${SEEDS:-0,1,2}" \
-  --routes "${ROUTES:-0}" \
-  --out "$OUT" \
+  --episodes "${EPISODES:-3}" \
+  --success-dist "${SUCCESS_DIST:-0.50}" \
+  --yolo-weights "${YOLO_WEIGHTS:-yolov8n.pt}" \
+  --yolo-conf "${YOLO_CONF:-0.4}" \
+  --yolo-imgsz "${YOLO_IMGSZ:-640}" \
+  --out-report "$OUT" \
   2>&1 | tee -a "$LOG"
 
-echo "[semantic_p0] done out=$OUT $(date -Is)" | tee -a "$LOG"
+echo "[indoor_vgoal] done out=$OUT $(date -Is)" | tee -a "$LOG"

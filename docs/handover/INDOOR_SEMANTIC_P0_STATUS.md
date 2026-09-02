@@ -5,8 +5,7 @@
 
 | 项 | 状态 |
 |----|------|
-| prompt parser / report meta / OpenVocabPromptDetector | ✅ 单测 |
-| `--dry-run` eval driver | ✅ |
-| Building99 closed-loop @0.50 n≥3 | ⏳ 下一刀（125） |
+| 接线 | ✅ 原 `VisualGoalWAMPolicy` + `YOLOTargetDetector`（conf=0.4 imgsz=640）→ indoor env/ckpt |
+| Building99 闭环 | ⏳ 125 跑 `run_indoor_semantic_p0_125.sh` |
 
-**禁止**：GT 检测器刷 PASS；与 F-cap / E3 签 C 混报完成。
+**禁止**：自改 YOLO 入参/扇出分支冒充原 vgoal；GT 检测器刷 PASS。

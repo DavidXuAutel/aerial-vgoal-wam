@@ -1,31 +1,40 @@
 #!/usr/bin/env python3
-"""Indoor semantic nav P0 — reuse vgoal; Building99 via AERIAL_INDOOR_ROOT.
+"""Indoor wiring of original vgoal AirSim eval.
 
-P0: target already in FOV · fixed visual_prompt · vision goal_rel · @0.50.
-No GT goal for control success. Dual-report GT distance is side-note only.
+Same stack as ``examples/eval_visual_goal_airsim.py``:
+  VisualGoalWAMPolicy + YOLOTargetDetector + RolloutCollector
+
+Only change vs outdoor eval: ``AERIAL_INDOOR_ROOT`` supplies env / ckpts / Building99
+annotation, and the detector is real ``YOLOTargetDetector`` (original defaults)
+instead of the outdoor GT projector stub.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import math
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from vgoal.detector import MockDetector, OpenVocabPromptDetector
-from vgoal.geometry import CameraIntrinsics, bbox_to_goal_rel
+from vgoal.bridge import VisualGoalPolicyConfig, VisualGoalWAMPolicy
+from vgoal.detector import YOLOTargetDetector
+from vgoal.geometry import CameraIntrinsics
 from vgoal.report_meta import semantic_nav_report_fields
+from vgoal.tracker import TrackerConfig
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
-logger = logging.getLogger("indoor_semantic_p0")
+logger = logging.getLogger("eval_indoor_vgoal")
 
 
 def _indoor_root(override: str = "") -> Path:
@@ -44,412 +53,25 @@ def _indoor_root(override: str = "") -> Path:
     return Path("/home/yao/aerial-indoor-wam")
 
 
-def run_dry_run(*, visual_prompt: str, out: Path) -> Dict[str, Any]:
-    h, w = 224, 224
-    rgb = np.zeros((h, w, 3), dtype=np.uint8)
-    depth = np.full((h, w), 3.0, dtype=np.float32)
-    bbox = [w * 0.35, h * 0.35, w * 0.65, h * 0.65]
-    name = visual_prompt.split(",")[0].strip() or "target"
-    inner = MockDetector(target_bbox=bbox, confidence=0.9, class_name=name)
-    det = OpenVocabPromptDetector(visual_prompt=visual_prompt, inner=inner)
-    hit = det.detect(rgb)
-    assert hit is not None
-    K = CameraIntrinsics.from_fov(80.0, width=w, height=h)
-    goal_rel = bbox_to_goal_rel(hit.bbox, depth, K)
-    summary = {
-        **semantic_nav_report_fields(
-            depth_source="airsim_depth", visual_prompt=visual_prompt, phase="P0"
-        ),
-        "mode": "dry_run",
-        "success_dist_m": 0.50,
-        "n": 1,
-        "arrived": True,
-        "collided": False,
-        "goal_rel": np.asarray(goal_rel, dtype=np.float64).reshape(-1).tolist(),
-        "detection": {
-            "class_name": hit.class_name,
-            "confidence": hit.confidence,
-            "bbox": hit.bbox.tolist(),
-        },
-        "note": "dry-run only — not a Building99 gate result",
-    }
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    return summary
+class VisualGoalDeployPolicyWrapper:
+    """Same wrapper as ``eval_visual_goal_airsim.VisualGoalDeployPolicyWrapper`` (YOLO path)."""
+
+    def __init__(self, vgoal_policy: VisualGoalWAMPolicy) -> None:
+        self.vgoal_policy = vgoal_policy
+
+    def reset(self) -> None:
+        self.vgoal_policy.reset()
+
+    def bind_episode(self, episode: Optional[Dict[str, Any]]) -> None:
+        return None
+
+    def act(self, policy_view: Any) -> np.ndarray:
+        return self.vgoal_policy.act(policy_view)
 
 
-def _load_segments(ann: Path, routes: str) -> List[Dict[str, Any]]:
-    raw = json.loads(ann.read_text(encoding="utf-8"))
-    items = raw if isinstance(raw, list) else raw.get("routes") or raw.get("segments") or []
-    idxs = [int(x) for x in routes.split(",") if str(x).strip() != ""]
-    segs: List[Dict[str, Any]] = []
-    for i in idxs:
-        it = items[i]
-        pos = it.get("pos") or it.get("positions")
-        yaw = it.get("yaw") or it.get("yaws")
-        if pos is None:
-            continue
-        pos_a = np.asarray(pos, dtype=np.float64)
-        yaw_a = np.asarray(yaw if yaw is not None else [0.0, 0.0], dtype=np.float64)
-        if pos_a.ndim == 1:
-            pos_a = pos_a.reshape(1, 3)
-        if len(pos_a) < 2:
-            # single pose: synthesize a 2 m forward goal for GT dual-report only
-            yaw0 = float(yaw_a.reshape(-1)[0]) if yaw_a.size else 0.0
-            g = pos_a[0] + np.array([np.cos(yaw0) * 2.0, np.sin(yaw0) * 2.0, 0.0])
-            pos_a = np.vstack([pos_a[0], g])
-            yaw_a = np.array([yaw0, yaw0])
-        d0 = float(np.linalg.norm(pos_a[1] - pos_a[0]))
-        segs.append(
-            {
-                "segment_name": str(it.get("trajectory_id") or it.get("gpt_instruction") or f"route_{i}"),
-                "gpt_instruction": str(it.get("gpt_instruction") or "semantic nav p0"),
-                "pos": pos_a.tolist(),
-                "yaw": yaw_a.reshape(-1).tolist(),
-                "d0_m": d0,
-                "source_route_idx": i,
-            }
-        )
-    return segs
-
-
-def _ensure_indoor_path(indoor: Path) -> None:
-    s = str(indoor)
-    if s not in sys.path:
-        sys.path.insert(0, s)
-
-
-def _yolo_rgb(obs: Any) -> np.ndarray:
-    """Same-grab YOLO fan-out branch (not a second camera); fall back to WAM rgb."""
-    y = getattr(obs, "rgb_yolo", None)
-    if y is not None:
-        return np.asarray(y, dtype=np.uint8)
-    return np.asarray(obs.rgb, dtype=np.uint8)
-
-
-def run_airsim_p0(args: argparse.Namespace) -> Dict[str, Any]:
-    indoor = _indoor_root(args.indoor_root)
-    if not indoor.is_dir():
-        raise FileNotFoundError(f"indoor root missing: {indoor}")
-    _ensure_indoor_path(indoor)
-    os.chdir(indoor)
-    # Prefer 640×480 single-cam capture for YOLO/VIO fan-out.
-    os.environ.setdefault("INDOOR_CAPTURE_W", "640")
-    os.environ.setdefault("INDOOR_CAPTURE_H", "480")
-    os.environ.setdefault("AIRSIM_FANOUT_RGB", "1")
-
-    import yaml
-    from experiments.aerial.rl.actor_critic import LatentActorCritic
-    from experiments.aerial.rl.train_rl import _build_env, _build_safety, load_torch_dynamics
-    from experiments.aerial.rl.collector import clip_body_delta
-
-    cfg_path = Path(args.config)
-    if not cfg_path.is_absolute():
-        cfg_path = indoor / cfg_path
-    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    cfg.setdefault("env", {})["backend"] = "airsim"
-    cfg["env"]["step_hz"] = float(args.step_hz)
-    cfg["env"]["grab_depth"] = True
-    cfg["env"]["fanout_rgb"] = True
-    try:
-        from experiments.aerial.rl.indoor_capture import indoor_capture_wh, WAM_ENCODE_SIZE
-
-        cw, ch = indoor_capture_wh()
-        cfg["env"]["width"] = int(cw)
-        cfg["env"]["height"] = int(ch)
-        cfg["env"]["wam_encode_size"] = int(WAM_ENCODE_SIZE)
-    except Exception:
-        cfg["env"]["width"] = 640
-        cfg["env"]["height"] = 480
-        cfg["env"]["wam_encode_size"] = 224
-
-    ann = Path(args.annotation)
-    if not ann.is_absolute():
-        ann = indoor / ann
-        if not ann.is_file():
-            ann = indoor / Path(args.annotation).name
-    if not ann.is_file():
-        # try repo-root copies used on 125
-        for fb in (indoor / "building99_indoor_short_routes_clean_e.json", indoor / "building99_indoor_short_routes_clean_sg.json"):
-            if fb.is_file():
-                ann = fb
-                break
-    segs = _load_segments(ann, args.routes)
-    if not segs:
-        raise RuntimeError(f"no segments from {ann} routes={args.routes}")
-
-    wm_path = Path(args.wm_ckpt)
-    if not wm_path.is_absolute():
-        wm_path = indoor / wm_path
-    act_path = Path(args.actor_ckpt)
-    if not act_path.is_absolute():
-        act_path = indoor / act_path
-
-    env = _build_env(cfg["env"])
-    dynamics, _ = load_torch_dynamics(
-        cfg.get("world_model") or {},
-        str(wm_path),
-        device=str(args.device),
-        success_dist_m=float(args.success_dist),
-    )
-    actor = LatentActorCritic.load_from_checkpoint(act_path, device=str(args.device))
-    shield = _build_safety(cfg.get("safety") or {})
-    # Indoor WM historically omitted self.image_size; encode/_embed requires it.
-    if not hasattr(dynamics, "image_size"):
-        object.__setattr__(dynamics, "image_size", int((cfg.get("world_model") or {}).get("image_size", 224)))
-
-    yolo_device = "0" if str(args.device).startswith("cuda") else "cpu"
-    detector = OpenVocabPromptDetector(
-        visual_prompt=args.visual_prompt,
-        model_path=args.yolo_weights,
-        conf_threshold=float(args.conf),
-        device=yolo_device,
-    )
-
-    limits = np.array([0.15, 0.08, 0.08, 0.10], dtype=np.float64)
-    episodes: List[Dict[str, Any]] = []
-    seeds = [int(x) for x in str(args.seeds).split(",") if str(x).strip() != ""]
-
-    for seed in seeds:
-        np.random.seed(seed)
-        seg = segs[seed % len(segs)]
-        ep = _run_one_episode(
-            env=env,
-            dynamics=dynamics,
-            actor=actor,
-            shield=shield,
-            detector=detector,
-            seg=seg,
-            success_dist=float(args.success_dist),
-            max_steps=int(args.max_steps),
-            step_hz=float(args.step_hz),
-            limits=limits,
-            visual_prompt=args.visual_prompt,
-            seed=seed,
-        )
-        episodes.append(ep)
-        logger.info(
-            "seed=%s seg=%s fail=%s arrived_vision=%s d_vis=%.3f d_gt=%.3f",
-            seed,
-            seg["segment_name"],
-            ep.get("fail_reason"),
-            ep.get("arrived_vision"),
-            ep.get("d_end_vision", float("nan")),
-            ep.get("d_end_gt_side", float("nan")),
-        )
-
-    n = len(episodes)
-    n_arr = sum(1 for e in episodes if e.get("arrived_vision"))
-    n_miss = sum(1 for e in episodes if e.get("fail_reason") == "miss_detect")
-    n_coll = sum(1 for e in episodes if e.get("collided"))
-    summary = {
-        **semantic_nav_report_fields(
-            depth_source="airsim_depth",
-            visual_prompt=args.visual_prompt,
-            phase="P0",
-        ),
-        "mode": "airsim",
-        "indoor_root": str(indoor),
-        "annotation": str(ann),
-        "actor_ckpt": str(act_path),
-        "wm_ckpt": str(wm_path),
-        "yolo_weights": args.yolo_weights,
-        "success_dist_m": float(args.success_dist),
-        "n": n,
-        "arrived_vision_n": n_arr,
-        "arrival_rate_vision": (n_arr / n) if n else 0.0,
-        "miss_detect_n": n_miss,
-        "collision_n": n_coll,
-        "primary_gate_pass": bool(n >= 3 and n_arr >= 2 and n_coll == 0),  # soft P0: ≥2/3
-        "gate_note": "P0 formal: n>=3 arrive_vision@0.50 collided=false; soft pass >=2/3 for smoke",
-        "episodes": episodes,
-    }
-    out = Path(args.out)
-    if not out.is_absolute():
-        out = ROOT / out
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    logger.info("wrote %s pass=%s", out, summary["primary_gate_pass"])
-    return summary
-
-
-def _run_one_episode(
-    *,
-    env: Any,
-    dynamics: Any,
-    actor: Any,
-    shield: Any,
-    detector: OpenVocabPromptDetector,
-    seg: Dict[str, Any],
-    success_dist: float,
-    max_steps: int,
-    step_hz: float,
-    limits: np.ndarray,
-    visual_prompt: str,
-    seed: int,
-) -> Dict[str, Any]:
-    """P0 loop: YOLO → airsim depth → vision goal_rel → indoor act_latent (+ shield)."""
-    from experiments.aerial.rl.collector import clip_body_delta
-    from experiments.aerial.rl.goal_features import body_vel_from_obs
-
-    goal_gt = np.asarray(seg["pos"][1], dtype=np.float64)  # dual-report only
-    obs = env.reset({"pos": seg["pos"], "yaw": seg["yaw"], "gpt_instruction": seg["gpt_instruction"]})
-    if obs is None or getattr(obs, "rgb", None) is None:
-        return {"seed": seed, "ok": False, "fail_reason": "reset_failed", "arrived_vision": False}
-
-    first = detector.detect(_yolo_rgb(obs))
-    if first is None:
-        return {
-            "seed": seed,
-            "ok": True,
-            "fail_reason": "miss_detect",
-            "arrived_vision": False,
-            "collided": False,
-            "steps": 0,
-            "segment_name": seg["segment_name"],
-            "detection0": None,
-            "rgb_yolo_shape": list(_yolo_rgb(obs).shape),
-            "d_end_gt_side": float(np.linalg.norm(np.asarray(obs.position) - goal_gt)),
-        }
-
-    if hasattr(shield, "reset"):
-        shield.reset()
-
-    y0 = _yolo_rgb(obs)
-    K = CameraIntrinsics.from_fov(80.0, width=int(y0.shape[1]), height=int(y0.shape[0]))
-    latent = np.asarray(dynamics.encode(obs), dtype=np.float64)
-    prev_act: Optional[np.ndarray] = None
-    d_vis = float("nan")
-    step_i = 0
-    last_cls = first.class_name
-
-    for step_i in range(max_steps):
-        rgb = _yolo_rgb(obs)
-        h, w = rgb.shape[:2]
-        if w != K.width or h != K.height:
-            K = CameraIntrinsics.from_fov(80.0, width=w, height=h)
-
-        hit = detector.detect(rgb)
-        vision_gr = None
-        if hit is not None:
-            last_cls = hit.class_name
-            depth = getattr(obs, "depth", None)
-            if depth is not None:
-                vision_gr = bbox_to_goal_rel(
-                    hit.bbox,
-                    np.asarray(depth, dtype=np.float32),
-                    K,
-                    src_shape=(w, h),
-                )
-
-        if vision_gr is None:
-            return {
-                "seed": seed,
-                "ok": True,
-                "fail_reason": "miss_detect",
-                "arrived_vision": False,
-                "collided": bool(getattr(obs, "collided", False)),
-                "steps": step_i,
-                "segment_name": seg["segment_name"],
-                "detection0": {
-                    "class_name": first.class_name,
-                    "confidence": first.confidence,
-                    "bbox": first.bbox.tolist(),
-                },
-            }
-
-        d_vis = float(np.linalg.norm(vision_gr[:3]))
-        if d_vis <= success_dist:
-            break
-
-        if hasattr(actor, "act_latent"):
-            action = np.asarray(
-                actor.act_latent(latent, goal_rel=vision_gr, deterministic=True),
-                dtype=np.float64,
-            ).reshape(4)
-        else:
-            heading_err = float(np.arctan2(vision_gr[1], vision_gr[0]))
-            action = np.array(
-                [
-                    float(np.clip(vision_gr[0] * 0.25, 0.05, limits[0])),
-                    0.0,
-                    0.0,
-                    float(np.clip(heading_err * 0.4, -limits[3], limits[3])),
-                ],
-                dtype=np.float64,
-            )
-        action = clip_body_delta(action, limits)
-
-        wm_out = None
-        try:
-            wm_out = dynamics.step(
-                latent,
-                action,
-                goal_rel=vision_gr,
-                body_vel=body_vel_from_obs(obs),
-            )
-        except TypeError:
-            wm_out = dynamics.step(latent, action)
-
-        if shield is not None:
-            apply_fn = getattr(shield, "apply_action", None)
-            if callable(apply_fn):
-                action, _ = apply_fn(action, obs, wm_out=wm_out, limits=limits)
-
-        next_obs, _info = env.step(action)
-        if wm_out is not None and hasattr(wm_out, "z_next"):
-            latent = np.asarray(wm_out.z_next, dtype=np.float64)
-        else:
-            latent = np.asarray(dynamics.encode(next_obs), dtype=np.float64)
-        obs = next_obs
-        prev_act = action.copy()
-        if bool(getattr(obs, "collided", False)):
-            break
-
-    # final vision distance
-    hit = detector.detect(_yolo_rgb(obs))
-    if hit is not None and getattr(obs, "depth", None) is not None:
-        yh, yw = _yolo_rgb(obs).shape[:2]
-        gr = bbox_to_goal_rel(
-            hit.bbox,
-            np.asarray(obs.depth, dtype=np.float32),
-            K,
-            src_shape=(yw, yh),
-        )
-        if gr is not None:
-            d_vis = float(np.linalg.norm(gr[:3]))
-
-    d_gt = float(np.linalg.norm(np.asarray(obs.position, dtype=np.float64) - goal_gt))
-    arrived_vision = bool(np.isfinite(d_vis) and d_vis <= success_dist)
-    return {
-        "seed": seed,
-        "ok": True,
-        "fail_reason": None if arrived_vision else ("collision" if getattr(obs, "collided", False) else "nav_fail"),
-        "arrived_vision": arrived_vision,
-        "collided": bool(getattr(obs, "collided", False)),
-        "steps": step_i + 1,
-        "d_end_vision": round(d_vis, 4) if np.isfinite(d_vis) else None,
-        "d_end_gt_side": round(d_gt, 4),
-        "segment_name": seg["segment_name"],
-        "detection0": {
-            "class_name": first.class_name,
-            "confidence": first.confidence,
-            "bbox": first.bbox.tolist(),
-        },
-        "last_class": last_cls,
-        "goal_from": "vision",
-    }
-
-
-def main() -> int:
-    p = argparse.ArgumentParser(description="Indoor semantic nav P0")
-    p.add_argument(
-        "--visual-prompt",
-        default="refrigerator,potted plant,chair,couch,tv,bottle,book,vase,person,dining table",
-    )
-    p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--out", default="artifacts/indoor_semantic_p0_summary.json")
-    p.add_argument("--indoor-root", default="")
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Original vgoal eval wired to aerial-indoor-wam")
+    p.add_argument("--indoor-root", default="", help="Override AERIAL_INDOOR_ROOT")
     p.add_argument("--config", default="configs/aerial_rl_indoor_shield_v3.yaml")
     p.add_argument(
         "--wm-ckpt",
@@ -459,28 +81,257 @@ def main() -> int:
         "--actor-ckpt",
         default="experiments/aerial/rl/artifacts/v4_ac_ckpt_indoor_e2i_e_20260901/v4_ac_latest.pt",
     )
+    p.add_argument(
+        "--depth-ckpt",
+        default="",
+        help="Optional depth head ckpt; empty = use AirSim depth via obs.depth",
+    )
     p.add_argument("--annotation", default="building99_indoor_short_routes_clean_e.json")
-    p.add_argument("--routes", default="0", help="Annotation indices (comma)")
-    p.add_argument("--seeds", default="0,1,2")
-    p.add_argument("--success-dist", type=float, default=0.50)
-    p.add_argument("--max-steps", type=int, default=80)
+    p.add_argument("--episodes", type=int, default=3)
+    p.add_argument("--max-steps", type=int, default=250)
+    p.add_argument("--takeoff-scan-steps", type=int, default=8)
+    p.add_argument("--planner", action="store_true", default=True)
+    p.add_argument("--planner-horizon", type=int, default=5)
     p.add_argument("--step-hz", type=float, default=5.0)
-    p.add_argument("--device", default="cuda")
+    p.add_argument("--fov-deg", type=float, default=80.0)
+    p.add_argument("--success-dist", type=float, default=0.50)
+    p.add_argument("--device", type=str, default="cuda")
+    # Original YOLOTargetDetector defaults
     p.add_argument("--yolo-weights", default="yolov8n.pt")
-    p.add_argument("--conf", type=float, default=0.12)
-    args = p.parse_args()
+    p.add_argument("--yolo-conf", type=float, default=0.4)
+    p.add_argument("--yolo-imgsz", type=int, default=640)
+    p.add_argument(
+        "--out-report",
+        default="artifacts/indoor_vgoal_eval_result.json",
+    )
+    return p.parse_args()
 
-    if args.dry_run:
-        out = Path(args.out)
-        if not out.is_absolute():
-            out = ROOT / out
-        summary = run_dry_run(visual_prompt=args.visual_prompt, out=out)
-        print(json.dumps(summary, indent=2))
-        return 0
 
-    summary = run_airsim_p0(args)
-    print(json.dumps({k: summary[k] for k in summary if k != "episodes"}, indent=2))
-    return 0 if summary.get("miss_detect_n", 0) < summary.get("n", 1) or summary.get("arrived_vision_n", 0) > 0 else 0
+def main() -> int:
+    args = parse_args()
+    indoor = _indoor_root(args.indoor_root)
+    if not indoor.is_dir():
+        raise FileNotFoundError(f"indoor root missing: {indoor}")
+    if str(indoor) not in sys.path:
+        sys.path.insert(0, str(indoor))
+    os.chdir(indoor)
+
+    from experiments.aerial.rl.actor_critic import LatentActorCritic
+    from experiments.aerial.rl.buffer import ReplayBuffer
+    from experiments.aerial.rl.collector import RolloutCollector
+    from experiments.aerial.rl.depth_predictor import DepthMinPredictor
+    from experiments.aerial.rl.planner import ImaginationPlanner
+    from experiments.aerial.rl.reward import RewardConfig
+    from experiments.aerial.rl.train_rl import _build_env, _build_safety, load_torch_dynamics
+
+    cfg_file = Path(args.config)
+    if not cfg_file.is_absolute():
+        cfg_file = indoor / cfg_file
+    cfg = yaml.safe_load(cfg_file.read_text(encoding="utf-8")) or {}
+    cfg.setdefault("env", {})["backend"] = "airsim"
+    cfg["env"]["step_hz"] = float(args.step_hz)
+    cfg["env"]["grab_depth"] = True
+    env = _build_env(cfg["env"])
+
+    reward_cfg = RewardConfig(**(cfg.get("reward") or {}))
+    reward_cfg.success_dist_m = float(args.success_dist)
+
+    wm_path = Path(args.wm_ckpt)
+    if not wm_path.is_absolute():
+        wm_path = indoor / wm_path
+    dynamics, _ = load_torch_dynamics(
+        cfg.get("world_model") or {},
+        str(wm_path),
+        device=str(args.device),
+        success_dist_m=float(args.success_dist),
+    )
+    if not hasattr(dynamics, "image_size"):
+        object.__setattr__(dynamics, "image_size", 224)
+
+    actor_path = Path(args.actor_ckpt)
+    if not actor_path.is_absolute():
+        actor_path = indoor / actor_path
+    actor_ac = LatentActorCritic.load_from_checkpoint(actor_path, device=str(args.device))
+
+    depth_pred = None
+    if args.depth_ckpt:
+        depth_path = Path(args.depth_ckpt)
+        if not depth_path.is_absolute():
+            depth_path = indoor / depth_path
+        if depth_path.is_file():
+            depth_pred = DepthMinPredictor.from_checkpoint(depth_path, device=str(args.device))
+
+    shield = _build_safety(cfg.get("safety") or {})
+
+    planner = None
+    if args.planner:
+        limits = np.array([1.0, 0.4, 0.4, math.pi / 10.0], dtype=np.float64)
+        planner = ImaginationPlanner(
+            dynamics=dynamics,
+            horizon=int(args.planner_horizon),
+            reward_cfg=reward_cfg,
+            action_limits=limits,
+            policy=actor_ac,
+        )
+
+    # Original vgoal camera + YOLO (defaults: conf=0.4, imgsz=640)
+    intrinsics = CameraIntrinsics.from_fov(fov_deg=args.fov_deg, width=224, height=224)
+    yolo_device = "0" if str(args.device).startswith("cuda") else "cpu"
+    target_detector = YOLOTargetDetector(
+        model_path=args.yolo_weights,
+        conf_threshold=float(args.yolo_conf),
+        imgsz=int(args.yolo_imgsz),
+        device=yolo_device,
+    )
+
+    tracker_cfg = TrackerConfig(
+        success_dist_m=float(args.success_dist),
+        max_occlusion_s=120.0,
+        ema_alpha=0.7,
+    )
+    policy_cfg = VisualGoalPolicyConfig(
+        intrinsics=intrinsics,
+        tracker_config=tracker_cfg,
+        dt=1.0 / float(args.step_hz),
+        use_planner=False,
+    )
+    vgoal_policy = VisualGoalWAMPolicy(
+        dynamics=dynamics,
+        actor_critic=actor_ac,
+        detector=target_detector,
+        depth_predictor=depth_pred,
+        safety_shield=None,
+        planner=None,
+        config=policy_cfg,
+    )
+    policy_wrapped = VisualGoalDeployPolicyWrapper(vgoal_policy)
+
+    buf = ReplayBuffer(capacity_episodes=4, seed=0)
+    collector = RolloutCollector(
+        env=env,
+        policy=policy_wrapped,
+        buffer=buf,
+        reward_cfg=reward_cfg,
+        safety=shield,
+        max_steps=int(args.max_steps),
+        target_hz=float(args.step_hz),
+        skip_reset_collision=True,
+        depth_predictor=depth_pred,
+        planner=planner,
+        dynamics=dynamics,
+        takeoff_scan_steps=int(args.takeoff_scan_steps),
+    )
+
+    ann_path = Path(args.annotation)
+    if not ann_path.is_absolute():
+        ann_path = indoor / ann_path
+        if not ann_path.is_file():
+            ann_path = indoor / Path(args.annotation).name
+    routes: List[Dict[str, Any]] = json.loads(ann_path.read_text(encoding="utf-8"))
+    n_eval = min(int(args.episodes), len(routes))
+    routes_to_eval = routes[:n_eval]
+
+    results: List[Dict[str, Any]] = []
+    n_arrived = 0
+    n_severe_coll = 0
+    progress_ratios: List[float] = []
+
+    logger.info(
+        "Indoor vgoal eval: n=%s success_dist=%.2f yolo=%s conf=%.2f imgsz=%s",
+        n_eval,
+        args.success_dist,
+        args.yolo_weights,
+        args.yolo_conf,
+        args.yolo_imgsz,
+    )
+
+    for idx, r in enumerate(routes_to_eval):
+        pos_arr = np.asarray(r["pos"], dtype=np.float64).reshape(-1, 3)
+        yaw_arr = np.asarray(r["yaw"], dtype=np.float64).reshape(-1)
+        start_pos = pos_arr[0].copy()
+        goal_pos = pos_arr[-1].copy()
+        start_yaw = float(yaw_arr[0])
+        ep_dict = {
+            "pos": [start_pos.tolist(), goal_pos.tolist()],
+            "yaw": [start_yaw, start_yaw],
+            "gpt_instruction": r.get("gpt_instruction", ""),
+        }
+        ep_trans, _stats = collector.collect_episode(ep_dict)
+        if not ep_trans:
+            logger.warning("Route %02d skipped (spawn collision).", idx + 1)
+            continue
+
+        d0 = float(np.linalg.norm(np.asarray(ep_trans[0].obs.position) - goal_pos))
+        last = ep_trans[-1]
+        end_obs = last.next_obs if last.next_obs is not None else last.obs
+        d_end = float(np.linalg.norm(np.asarray(end_obs.position) - goal_pos))
+        d_min = min(float(np.linalg.norm(np.asarray(tr.obs.position) - goal_pos)) for tr in ep_trans)
+        arrived = bool(d_min <= args.success_dist or d_end <= args.success_dist)
+        prog = float(np.clip((d0 - d_end) / max(d0, 1e-4), 0.0, 1.0))
+        collided = any(bool(getattr(tr.next_obs, "collided", False)) for tr in ep_trans)
+        if arrived:
+            n_arrived += 1
+        if collided:
+            n_severe_coll += 1
+        progress_ratios.append(prog)
+        logger.info(
+            "Route %02d/%02d steps=%d d0=%.2f d_end=%.2f arrived=%s coll=%s",
+            idx + 1,
+            n_eval,
+            len(ep_trans),
+            d0,
+            d_end,
+            arrived,
+            collided,
+        )
+        results.append(
+            {
+                "route_idx": idx,
+                "steps": len(ep_trans),
+                "d_start_m": d0,
+                "d_end_m": d_end,
+                "d_min_m": d_min,
+                "arrived": arrived,
+                "collided": collided,
+                "progress_ratio": prog,
+            }
+        )
+
+    env.close()
+
+    summary = {
+        **semantic_nav_report_fields(
+            depth_source="airsim_depth" if depth_pred is None else "depth_head",
+            visual_prompt="yolo_coco_unfiltered",
+            phase="P0",
+        ),
+        "timestamp": time.time(),
+        "indoor_root": str(indoor),
+        "annotation": str(ann_path),
+        "yolo_weights": args.yolo_weights,
+        "yolo_conf": float(args.yolo_conf),
+        "yolo_imgsz": int(args.yolo_imgsz),
+        "success_dist_m": float(args.success_dist),
+        "n_episodes": len(results),
+        "arrival_rate": float(n_arrived / max(1, len(results))),
+        "severe_collision_rate": float(n_severe_coll / max(1, len(results))),
+        "mean_progress_ratio": float(np.mean(progress_ratios)) if progress_ratios else 0.0,
+        "episodes": results,
+    }
+
+    out_p = Path(args.out_report)
+    if not out_p.is_absolute():
+        out_p = ROOT / out_p
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    out_p.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    logger.info(
+        "done arrival=%.1f%% (%d/%d) out=%s",
+        100.0 * summary["arrival_rate"],
+        n_arrived,
+        len(results),
+        out_p,
+    )
+    return 0
 
 
 if __name__ == "__main__":
