@@ -170,6 +170,9 @@ def run_airsim_p0(args: argparse.Namespace) -> Dict[str, Any]:
     )
     actor = LatentActorCritic.load_from_checkpoint(act_path, device=str(args.device))
     shield = _build_safety(cfg.get("safety") or {})
+    # Indoor WM historically omitted self.image_size; encode/_embed requires it.
+    if not hasattr(dynamics, "image_size"):
+        object.__setattr__(dynamics, "image_size", int((cfg.get("world_model") or {}).get("image_size", 224)))
 
     yolo_device = "0" if str(args.device).startswith("cuda") else "cpu"
     detector = OpenVocabPromptDetector(
