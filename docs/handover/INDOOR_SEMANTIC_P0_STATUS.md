@@ -2,17 +2,22 @@
 
 | 项 | 状态 |
 |----|------|
-| 接线 | ✅ 原 `VisualGoalWAMPolicy` + `YOLOTargetDetector` → indoor env/ckpt |
-| Building99 e (n=1) | ✅ 1/1 · coll=0 |
-| Building99 sg (n=3) | ⚠️ **2/3** · coll=0 · stamp `20260902_vgoal_sg` |
+| 接线 | ✅ 原 vgoal + `terminal_dock=False`（真视觉） |
+| GT-dock 伪测 (sg) | ⚠️ 2/3 — **无效**（`policy_calls=0`） |
+| **真视觉** (sg) | ✅ 已跑 stamp `20260902_vgoal_vision` · **0/3** arrived · coll=0 · `mean_policy_calls=242` |
 | Gate / archive | ❌ 未过 — **不 archive** |
 
-## South 失败根因（2026-09-02 diag）
+## 真视觉结果（`clean_sg`）
 
-复现 `west→south→east`：`artifacts/diag_sg_order_20260902.json`
+| route | arrived | d0→d_end | policy_calls | detect | last_det |
+|-------|---------|----------|--------------|--------|----------|
+| west | ❌ | 3.00→4.34 | 242 | 173 | person |
+| south | ❌ | 3.30→4.70 | 242 | 174 | potted plant |
+| east | ❌ | 3.34→4.72 | 242 | 163 | person |
 
-1. **三条路 `policy_calls=0`**：indoor `RolloutCollector` 在 `d_goal≤35m` 且 `d_fwd≥1.5` 时走 **ann GT docking**，不调用 `VisualGoalWAMPolicy`。无 depth head 时 `d_fwd` 默认 5.0 → **几乎全程 GT dock**。报告 `goal_from=vision` **名不副实**。
-2. **South 失败机制**：GT dock 在南向走廊 **冲过/横漂振荡**（y≈-5.5↔-3.1，x±1.4），`d_min≈0.99` 进不了 0.50；打满 250 步。West/east 短途 dock 能收在 0.50 内。
-3. Spawn YOLO 能看到 `person`，但本评测 **未用** 视觉目标控机。
+报告：`artifacts/indoor_vgoal_eval_20260902_vgoal_vision.json`  
+commits：vgoal `07e6e9e` · indoor collector `96e3cc5`（`terminal_dock` 默认开，F-cap 不变）
 
-**禁止**：自改 YOLO 冒充原 vgoal；用 GT dock 刷 vision PASS。
+解读：YOLO 锁到走廊旁 COCO 目标并飞离 ann 航点；ann 到达门与「跟视觉目标」不一致。P0 需固定 `visual_prompt`/目标与航点对齐，或改评分到视觉目标距。
+
+**禁止**：GT dock 刷 vision PASS；乱改 YOLO 默认冒充原 vgoal。
