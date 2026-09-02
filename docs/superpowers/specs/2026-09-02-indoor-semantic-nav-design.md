@@ -23,11 +23,21 @@ Indoor repo stays the **runtime/env donor** (AirSim Building99, E-head ckpt, thr
 
 ## 3. Architecture (thin adapter)
 
+**单相机扇出（不是双相机）**：AirSim / 机载只采 **一路 RGB**（可同帧附带 depth stub）。同一帧在软件里 fan-out：
+
+```text
+          ┌─► WAM encode / π（z）
+单目 RGB ─┼─► YOLO / 开放词表检测 → goal_rel（本轨）
+          └─► VIO（另立估器轨；与本轨并行消费同一帧，不另开相机）
+```
+
+任务数据流：
+
 ```text
 instruction
   → (P2) optional LLM → visual_prompt
-  → open-vocab detector (YOLO-World or equivalent)
-  → D̂ center-box depth → camera back-project → goal_rel
+  → open-vocab detector on **the same** RGB
+  → D̂ / depth stub center-box → back-project → goal_rel
   → FSM: SEARCH | TRACK | APPROACH | DONE/FAIL
   → existing π(a | z, goal_rel) + indoor three-zone shield
 ```
