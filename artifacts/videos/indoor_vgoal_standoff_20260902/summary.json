@@ -1,0 +1,41 @@
+[
+  {
+    "trajectory_id": "B99_lobby_west_3m",
+    "steps": 27,
+    "collided": true,
+    "policy_calls": 19,
+    "detect_hits": 18,
+    "last_det": "person",
+    "min_standoff_goal_dist_m": 1.4204649925231934,
+    "min_object_dist_m": 2.3636953830718994,
+    "vision_arrived": false,
+    "ego_mp4": "/home/yao/aerial-vgoal-wam/artifacts/videos/indoor_vgoal_standoff_20260902/B99_lobby_west_3m_ego.mp4",
+    "n_frames": 19
+  },
+  {
+    "trajectory_id": "B99_lobby_south_3m",
+    "steps": 52,
+    "collided": true,
+    "policy_calls": 44,
+    "detect_hits": 29,
+    "last_det": "potted plant",
+    "min_standoff_goal_dist_m": 1.7481911182403564,
+    "min_object_dist_m": 2.7481911182403564,
+    "vision_arrived": false,
+    "ego_mp4": "/home/yao/aerial-vgoal-wam/artifacts/videos/indoor_vgoal_standoff_20260902/B99_lobby_south_3m_ego.mp4",
+    "n_frames": 44
+  },
+  {
+    "trajectory_id": "B99_lobby_east_from_1",
+    "steps": 31,
+    "collided": true,
+    "policy_calls": 23,
+    "detect_hits": 18,
+    "last_det": "person",
+    "min_standoff_goal_dist_m": 1.7806334495544434,
+    "min_object_dist_m": 2.7806334495544434,
+    "vision_arrived": false,
+    "ego_mp4": "/home/yao/aerial-vgoal-wam/artifacts/videos/indoor_vgoal_standoff_20260902/B99_lobby_east_from_1_ego.mp4",
+    "n_frames": 23
+  }
+]

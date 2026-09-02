@@ -1,0 +1,90 @@
+{
+  "method": "semantic_nav",
+  "goal_from": "vision",
+  "depth_source": "airsim_depth",
+  "visual_prompt": "column",
+  "phase": "P0",
+  "control_mode": "vision_standoff",
+  "terminal_dock": false,
+  "approach_standoff_m": 1.0,
+  "success_dist_m": 0.5,
+  "success_metric": "standoff_waypoint",
+  "prefer_nearest_target": true,
+  "collector_planner": false,
+  "timestamp": 1788349028.4355118,
+  "indoor_root": "/home/yao/aerial-indoor-wam",
+  "annotation_spawn_only": "/home/yao/aerial-vgoal-wam/artifacts/building99_indoor_pillar_standoff_east3.json",
+  "yolo_weights": "/home/yao/aerial-indoor-wam/yolov8s-world.pt",
+  "yolo_conf": 0.05,
+  "yolo_imgsz": 640,
+  "target_classes": [
+    "column"
+  ],
+  "n_episodes": 3,
+  "arrival_rate": 0.0,
+  "severe_collision_rate": 1.0,
+  "mean_progress_ratio": 0.2099123952164851,
+  "mean_policy_calls": 41.333333333333336,
+  "episodes": [
+    {
+      "route_idx": 0,
+      "trajectory_id": "B99_lobby_pillar_east_a",
+      "steps": 33,
+      "vision_arrived": false,
+      "collided": true,
+      "min_standoff_goal_dist_m": 5.816100120544434,
+      "min_object_dist_m": 6.89902400970459,
+      "last_object_dist_m": 7.142016410827637,
+      "policy_calls": 25,
+      "detect_hits": 7,
+      "last_det": "column",
+      "yolo_rgb_wh": [
+        640,
+        480
+      ],
+      "ann_dual_d_start_m": 0.04860203266143803,
+      "ann_dual_d_end_m": 2.2188871515339406,
+      "progress_ratio": 0.00017190696038882347
+    },
+    {
+      "route_idx": 1,
+      "trajectory_id": "B99_lobby_pillar_east_b",
+      "steps": 30,
+      "vision_arrived": false,
+      "collided": true,
+      "min_standoff_goal_dist_m": 2.592569589614868,
+      "min_object_dist_m": 3.27131724357605,
+      "last_object_dist_m": 3.6221487522125244,
+      "policy_calls": 22,
+      "detect_hits": 6,
+      "last_det": "column",
+      "yolo_rgb_wh": [
+        640,
+        480
+      ],
+      "ann_dual_d_start_m": 0.05149679124213196,
+      "ann_dual_d_end_m": 1.8253519847981994,
+      "progress_ratio": 0.13581013679504395
+    },
+    {
+      "route_idx": 2,
+      "trajectory_id": "B99_lobby_pillar_east_c",
+      "steps": 85,
+      "vision_arrived": false,
+      "collided": true,
+      "min_standoff_goal_dist_m": 1.5187345743179321,
+      "min_object_dist_m": 2.378190279006958,
+      "last_object_dist_m": 2.378190279006958,
+      "policy_calls": 77,
+      "detect_hits": 21,
+      "last_det": "column",
+      "yolo_rgb_wh": [
+        640,
+        480
+      ],
+      "ann_dual_d_start_m": 0.06035712928794695,
+      "ann_dual_d_end_m": 1.9582253646458152,
+      "progress_ratio": 0.4937551418940226
+    }
+  ]
+}

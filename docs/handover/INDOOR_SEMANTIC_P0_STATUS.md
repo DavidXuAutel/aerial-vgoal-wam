@@ -1,10 +1,13 @@
 # Indoor Semantic P0 — STATUS
 
+> **2026-09-02 已归档 checkpoint**（非任务 PASS）：  
+> [`INDOOR_SEMANTIC_P0_ARCHIVE_20260902.md`](INDOOR_SEMANTIC_P0_ARCHIVE_20260902.md)
+
 | 项 | 状态 |
 |----|------|
-| 相机 | **单相机 fan-out**：capture → `rgb_vio` / `rgb`(WAM 224) / `rgb_yolo`(原生) |
-| 纠错 | YOLO 必须吃 `rgb_yolo`；**CaptureSettings 也必须是 640×480**（曾误留 224 出图） |
-| 任务 | 大厅 **pillar** → 停前 **1m** |
-| pillar@rgb_yolo640 | ⏳ 重启 renderer 后重跑 |
+| 相机 fan-out | ✅ 单相机 640 → `rgb_vio` / `rgb`224 / `rgb_yolo`640 |
+| 控制核 | WAM 未证伪；失败主因在 YOLO 选目标 |
+| 感知 | ❌ 真柱弱报；`column` 易锁闸机 |
+| Gate | **未过** — 大厅柱停前 1 m |
 
-**禁止**：双相机叙事；YOLO 吃 224；换类乱跟；用 outdoor `settings.json`(224) 跑 indoor。
+**下一步（重开时）**：优化 YOLO/选框/站位 → 再跑 → 再验 WAM 站停。

@@ -1,0 +1,29 @@
+{
+  "method": "semantic_nav",
+  "goal_from": "vision",
+  "depth_source": "airsim_depth",
+  "visual_prompt": "potted plant,chair,couch,tv,bottle,book,vase,person",
+  "phase": "P0",
+  "mode": "dry_run",
+  "success_dist_m": 0.5,
+  "n": 1,
+  "arrived": true,
+  "collided": false,
+  "goal_rel": [
+    3.0,
+    -0.0,
+    -0.0,
+    3.0
+  ],
+  "detection": {
+    "class_name": "potted plant",
+    "confidence": 0.9,
+    "bbox": [
+      78.4000015258789,
+      78.4000015258789,
+      145.60000610351562,
+      145.60000610351562
+    ]
+  },
+  "note": "dry-run only \u2014 not a Building99 gate result"
+}
