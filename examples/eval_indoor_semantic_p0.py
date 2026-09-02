@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Indoor wiring of original vgoal AirSim eval.
+"""Indoor object-goal eval: YOLO → standoff waypoint → fly-to.
 
-Same stack as ``examples/eval_visual_goal_airsim.py``:
-  VisualGoalWAMPolicy + YOLOTargetDetector + RolloutCollector
-
-Only change vs outdoor eval: ``AERIAL_INDOOR_ROOT`` supplies env / ckpts / Building99
-annotation, and the detector is real ``YOLOTargetDetector`` (original defaults)
-instead of the outdoor GT projector stub.
+Ann JSON supplies **spawn only** (start pose / facing). Success is vision-sourced:
+detect object → approach point ``standoff_m`` in front of it → arrive within
+``success_dist`` of that waypoint. Do **not** score against ann polyline ends.
 """
 from __future__ import annotations
 
@@ -18,7 +15,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import yaml
@@ -31,7 +28,7 @@ from vgoal.bridge import VisualGoalPolicyConfig, VisualGoalWAMPolicy
 from vgoal.detector import YOLOTargetDetector
 from vgoal.geometry import CameraIntrinsics
 from vgoal.report_meta import semantic_nav_report_fields
-from vgoal.tracker import TrackerConfig
+from vgoal.tracker import TargetState, TrackerConfig
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("eval_indoor_vgoal")
@@ -54,19 +51,29 @@ def _indoor_root(override: str = "") -> Path:
 
 
 class VisualGoalDeployPolicyWrapper:
-    """Same wrapper as ``eval_visual_goal_airsim.VisualGoalDeployPolicyWrapper`` (YOLO path)."""
+    """YOLO → standoff goal_rel policy wrapper for RolloutCollector."""
 
     def __init__(self, vgoal_policy: VisualGoalWAMPolicy) -> None:
         self.vgoal_policy = vgoal_policy
         self.policy_calls = 0
         self.detect_hits = 0
         self.last_det_name: Optional[str] = None
+        self.ever_arrived = False
+        self.min_standoff_goal_dist = float("inf")
+        self.min_object_dist = float("inf")
+        self.last_object_dist: Optional[float] = None
+        self.last_standoff_goal_dist: Optional[float] = None
 
     def reset(self) -> None:
         self.vgoal_policy.reset()
         self.policy_calls = 0
         self.detect_hits = 0
         self.last_det_name = None
+        self.ever_arrived = False
+        self.min_standoff_goal_dist = float("inf")
+        self.min_object_dist = float("inf")
+        self.last_object_dist = None
+        self.last_standoff_goal_dist = None
 
     def bind_episode(self, episode: Optional[Dict[str, Any]]) -> None:
         return None
@@ -78,11 +85,25 @@ class VisualGoalDeployPolicyWrapper:
         if det is not None:
             self.detect_hits += 1
             self.last_det_name = str(det.class_name)
+        obj = self.vgoal_policy.last_object_goal_rel
+        if obj is not None:
+            od = float(obj[3]) if len(obj) > 3 else float(np.linalg.norm(obj[:3]))
+            self.last_object_dist = od
+            self.min_object_dist = min(self.min_object_dist, od)
+        gr = self.vgoal_policy.last_goal_rel
+        if gr is not None:
+            gd = float(gr[3]) if len(gr) > 3 else float(np.linalg.norm(gr[:3]))
+            self.last_standoff_goal_dist = gd
+            self.min_standoff_goal_dist = min(self.min_standoff_goal_dist, gd)
+        if self.vgoal_policy.last_target_state == TargetState.ARRIVED:
+            self.ever_arrived = True
         return action
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Original vgoal eval wired to aerial-indoor-wam")
+    p = argparse.ArgumentParser(
+        description="Indoor YOLO→standoff waypoint vgoal eval (ann = spawn only)"
+    )
     p.add_argument("--indoor-root", default="", help="Override AERIAL_INDOOR_ROOT")
     p.add_argument("--config", default="configs/aerial_rl_indoor_shield_v3.yaml")
     p.add_argument(
@@ -101,7 +122,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--annotation",
         default="building99_indoor_short_routes_clean_sg.json",
-        help="Building99 route ann (clean_sg = west/south/east, n=3)",
+        help="Spawn poses only (start/yaw); ann end is dual-report, not success",
     )
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--max-steps", type=int, default=250)
@@ -110,17 +131,32 @@ def parse_args() -> argparse.Namespace:
         "--planner",
         action="store_true",
         default=False,
-        help="Enable collector imagination planner (uses ann GT goal; off for true vision)",
+        help="Enable collector imagination planner (uses env goal; off for vision)",
     )
     p.add_argument("--planner-horizon", type=int, default=5)
     p.add_argument("--step-hz", type=float, default=5.0)
     p.add_argument("--fov-deg", type=float, default=80.0)
-    p.add_argument("--success-dist", type=float, default=0.50)
+    p.add_argument(
+        "--standoff-m",
+        type=float,
+        default=1.0,
+        help="Approach waypoint distance in front of detected object (indoor default 1m)",
+    )
+    p.add_argument(
+        "--success-dist",
+        type=float,
+        default=0.50,
+        help="Arrive if within this of the standoff waypoint (not the object surface)",
+    )
     p.add_argument("--device", type=str, default="cuda")
-    # Original YOLOTargetDetector defaults
     p.add_argument("--yolo-weights", default="yolov8n.pt")
     p.add_argument("--yolo-conf", type=float, default=0.4)
     p.add_argument("--yolo-imgsz", type=int, default=640)
+    p.add_argument(
+        "--target-classes",
+        default="",
+        help="Comma-separated COCO class filter (e.g. refrigerator). Empty = unfiltered",
+    )
     p.add_argument(
         "--out-report",
         default="artifacts/indoor_vgoal_eval_result.json",
@@ -155,7 +191,8 @@ def main() -> int:
     env = _build_env(cfg["env"])
 
     reward_cfg = RewardConfig(**(cfg.get("reward") or {}))
-    reward_cfg.success_dist_m = float(args.success_dist)
+    # Reward still needs an env goal for reset; keep tight vs far dummy so ann end ≠ PASS.
+    reward_cfg.success_dist_m = 0.05
 
     wm_path = Path(args.wm_ckpt)
     if not wm_path.is_absolute():
@@ -195,11 +232,14 @@ def main() -> int:
             policy=actor_ac,
         )
 
-    # Original vgoal camera + YOLO (defaults: conf=0.4, imgsz=640)
     intrinsics = CameraIntrinsics.from_fov(fov_deg=args.fov_deg, width=224, height=224)
     yolo_device = "0" if str(args.device).startswith("cuda") else "cpu"
+    class_filter: Optional[Sequence[str]] = None
+    if str(args.target_classes).strip():
+        class_filter = [c.strip() for c in str(args.target_classes).split(",") if c.strip()]
     target_detector = YOLOTargetDetector(
         model_path=args.yolo_weights,
+        target_classes=class_filter,
         conf_threshold=float(args.yolo_conf),
         imgsz=int(args.yolo_imgsz),
         device=yolo_device,
@@ -209,12 +249,14 @@ def main() -> int:
         success_dist_m=float(args.success_dist),
         max_occlusion_s=120.0,
         ema_alpha=0.7,
+        min_confidence=float(args.yolo_conf),
     )
     policy_cfg = VisualGoalPolicyConfig(
         intrinsics=intrinsics,
         tracker_config=tracker_cfg,
         dt=1.0 / float(args.step_hz),
         use_planner=False,
+        approach_standoff_m=float(args.standoff_m),
     )
     vgoal_policy = VisualGoalWAMPolicy(
         dynamics=dynamics,
@@ -266,24 +308,30 @@ def main() -> int:
     progress_ratios: List[float] = []
 
     logger.info(
-        "Indoor vgoal TRUE vision: n=%s success_dist=%.2f yolo=%s conf=%.2f imgsz=%s "
-        "terminal_dock=False planner=%s",
+        "Indoor vgoal object-standoff: n=%s standoff=%.2fm success=%.2fm yolo=%s conf=%.2f "
+        "imgsz=%s classes=%s terminal_dock=False",
         n_eval,
+        args.standoff_m,
         args.success_dist,
         args.yolo_weights,
         args.yolo_conf,
         args.yolo_imgsz,
-        bool(planner),
+        class_filter or "unfiltered",
     )
 
     for idx, r in enumerate(routes_to_eval):
         pos_arr = np.asarray(r["pos"], dtype=np.float64).reshape(-1, 3)
         yaw_arr = np.asarray(r["yaw"], dtype=np.float64).reshape(-1)
         start_pos = pos_arr[0].copy()
-        goal_pos = pos_arr[-1].copy()
         start_yaw = float(yaw_arr[0])
+        # Far dummy env goal so NavigationReward cannot false-PASS on ann end.
+        far = start_pos + np.array(
+            [100.0 * math.cos(start_yaw), 100.0 * math.sin(start_yaw), 0.0],
+            dtype=np.float64,
+        )
+        ann_end = pos_arr[-1].copy()
         ep_dict = {
-            "pos": [start_pos.tolist(), goal_pos.tolist()],
+            "pos": [start_pos.tolist(), far.tolist()],
             "yaw": [start_yaw, start_yaw],
             "gpt_instruction": r.get("gpt_instruction", ""),
             "trajectory_id": r.get("trajectory_id", ""),
@@ -294,48 +342,68 @@ def main() -> int:
             logger.warning("Route %02d skipped (spawn collision).", idx + 1)
             continue
 
-        d0 = float(np.linalg.norm(np.asarray(ep_trans[0].obs.position) - goal_pos))
+        vision_arrived = bool(
+            policy_wrapped.ever_arrived
+            or (
+                policy_wrapped.min_standoff_goal_dist < float("inf")
+                and policy_wrapped.min_standoff_goal_dist <= float(args.success_dist)
+            )
+        )
+        d_ann0 = float(np.linalg.norm(np.asarray(ep_trans[0].obs.position) - ann_end))
         last = ep_trans[-1]
         end_obs = last.next_obs if last.next_obs is not None else last.obs
-        d_end = float(np.linalg.norm(np.asarray(end_obs.position) - goal_pos))
-        d_min = min(float(np.linalg.norm(np.asarray(tr.obs.position) - goal_pos)) for tr in ep_trans)
-        arrived = bool(d_min <= args.success_dist or d_end <= args.success_dist)
-        prog = float(np.clip((d0 - d_end) / max(d0, 1e-4), 0.0, 1.0))
+        d_ann_end = float(np.linalg.norm(np.asarray(end_obs.position) - ann_end))
         collided = any(bool(getattr(tr.next_obs, "collided", False)) for tr in ep_trans)
-        if arrived:
+        if vision_arrived:
             n_arrived += 1
         if collided:
             n_severe_coll += 1
+        gmin = policy_wrapped.min_standoff_goal_dist
+        if gmin < float("inf"):
+            prog = float(np.clip(1.0 - gmin / max(gmin + 1e-3, 3.0), 0.0, 1.0))
+        else:
+            prog = 0.0
         progress_ratios.append(prog)
         logger.info(
-            "Route %02d/%02d id=%s steps=%d d0=%.2f d_end=%.2f arrived=%s coll=%s "
-            "policy_calls=%d detect_hits=%d last_det=%s",
+            "Route %02d/%02d id=%s steps=%d vision_arrived=%s coll=%s "
+            "min_standoff_goal=%.2f min_obj=%.2f last_det=%s policy_calls=%d detect_hits=%d "
+            "(ann_dual d0=%.2f d_end=%.2f)",
             idx + 1,
             n_eval,
             r.get("trajectory_id", ""),
             len(ep_trans),
-            d0,
-            d_end,
-            arrived,
+            vision_arrived,
             collided,
+            gmin if gmin < float("inf") else -1.0,
+            policy_wrapped.min_object_dist if policy_wrapped.min_object_dist < float("inf") else -1.0,
+            policy_wrapped.last_det_name,
             policy_wrapped.policy_calls,
             policy_wrapped.detect_hits,
-            policy_wrapped.last_det_name,
+            d_ann0,
+            d_ann_end,
         )
         results.append(
             {
                 "route_idx": idx,
                 "trajectory_id": r.get("trajectory_id", ""),
                 "steps": len(ep_trans),
-                "d_start_m": d0,
-                "d_end_m": d_end,
-                "d_min_m": d_min,
-                "arrived": arrived,
+                "vision_arrived": vision_arrived,
                 "collided": collided,
-                "progress_ratio": prog,
+                "min_standoff_goal_dist_m": (
+                    None if gmin == float("inf") else float(gmin)
+                ),
+                "min_object_dist_m": (
+                    None
+                    if policy_wrapped.min_object_dist == float("inf")
+                    else float(policy_wrapped.min_object_dist)
+                ),
+                "last_object_dist_m": policy_wrapped.last_object_dist,
                 "policy_calls": int(policy_wrapped.policy_calls),
                 "detect_hits": int(policy_wrapped.detect_hits),
                 "last_det": policy_wrapped.last_det_name,
+                "ann_dual_d_start_m": d_ann0,
+                "ann_dual_d_end_m": d_ann_end,
+                "progress_ratio": prog,
             }
         )
 
@@ -344,19 +412,24 @@ def main() -> int:
     summary = {
         **semantic_nav_report_fields(
             depth_source="airsim_depth" if depth_pred is None else "depth_head",
-            visual_prompt="yolo_coco_unfiltered",
+            visual_prompt=(
+                ",".join(class_filter) if class_filter else "yolo_coco_unfiltered"
+            ),
             phase="P0",
         ),
-        "control_mode": "vision_policy",
+        "control_mode": "vision_standoff",
         "terminal_dock": False,
+        "approach_standoff_m": float(args.standoff_m),
+        "success_dist_m": float(args.success_dist),
+        "success_metric": "standoff_waypoint",
         "collector_planner": bool(planner),
         "timestamp": time.time(),
         "indoor_root": str(indoor),
-        "annotation": str(ann_path),
+        "annotation_spawn_only": str(ann_path),
         "yolo_weights": args.yolo_weights,
         "yolo_conf": float(args.yolo_conf),
         "yolo_imgsz": int(args.yolo_imgsz),
-        "success_dist_m": float(args.success_dist),
+        "target_classes": list(class_filter) if class_filter else None,
         "n_episodes": len(results),
         "arrival_rate": float(n_arrived / max(1, len(results))),
         "severe_collision_rate": float(n_severe_coll / max(1, len(results))),
@@ -371,7 +444,7 @@ def main() -> int:
     out_p.parent.mkdir(parents=True, exist_ok=True)
     out_p.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     logger.info(
-        "done arrival=%.1f%% (%d/%d) mean_policy_calls=%.1f out=%s",
+        "done vision_arrival=%.1f%% (%d/%d) mean_policy_calls=%.1f out=%s",
         100.0 * summary["arrival_rate"],
         n_arrived,
         len(results),

@@ -3,7 +3,7 @@
 import unittest
 import numpy as np
 
-from vgoal.geometry import CameraIntrinsics, bbox_to_goal_rel, extract_target_depth, project_3d_to_pixel
+from vgoal.geometry import CameraIntrinsics, bbox_to_goal_rel, extract_target_depth, project_3d_to_pixel, apply_approach_standoff
 
 
 class TestGeometry(unittest.TestCase):
@@ -63,6 +63,22 @@ class TestGeometry(unittest.TestCase):
         self.assertTrue(np.isclose(goal_rel[0], p_body[0], atol=1e-3))
         self.assertTrue(np.isclose(goal_rel[1], p_body[1], atol=1e-3))
         self.assertTrue(np.isclose(goal_rel[2], p_body[2], atol=1e-3))
+
+    def test_approach_standoff_shrinks_along_ray(self):
+        obj = np.array([5.0, 0.0, 0.0, 5.0], dtype=np.float32)
+        wp = apply_approach_standoff(obj, 1.0)
+        self.assertTrue(np.isclose(wp[0], 4.0, atol=1e-4))
+        self.assertTrue(np.isclose(wp[3], 4.0, atol=1e-4))
+
+    def test_approach_standoff_zero_when_inside(self):
+        obj = np.array([0.6, 0.0, 0.0, 0.6], dtype=np.float32)
+        wp = apply_approach_standoff(obj, 1.0)
+        self.assertTrue(np.allclose(wp, 0.0))
+
+    def test_approach_standoff_zero_keeps_object(self):
+        obj = np.array([5.0, 1.0, 0.0, float(np.sqrt(26.0))], dtype=np.float32)
+        wp = apply_approach_standoff(obj, 0.0)
+        self.assertTrue(np.allclose(wp[:3], obj[:3]))
 
 
 if __name__ == "__main__":

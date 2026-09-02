@@ -57,8 +57,8 @@ Hard rules:
 - Fixed `visual_prompt` (no LLM).
 - Open-vocab (or class-filtered) detect on RGB.
 - Back-project with depth head / sim depth stub (declare source).
-- If target in view: TRACK/APPROACH with indoor E-head + shield @0.50.
-- Gate (n≥3): arrive @0.50 · `collided=false` · `goal_from=vision`.
+- If target in view: object hit → **standoff waypoint** (e.g. 1 m in front) → TRACK/APPROACH; ann is spawn-only.
+- Gate (n≥3): arrive within success_dist of **standoff waypoint** · `collided=false` · `goal_from=vision` (not ann polyline end).
 
 ### P1 — Search when not visible
 

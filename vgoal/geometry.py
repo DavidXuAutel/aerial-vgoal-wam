@@ -141,6 +141,36 @@ def bbox_to_goal_rel(
     return np.array([d_fwd, d_left, d_up, dist], dtype=np.float32)
 
 
+def apply_approach_standoff(
+    object_goal_rel: Sequence[float],
+    standoff_m: float,
+) -> np.ndarray:
+    """Convert object-surface ``goal_rel`` into an approach standoff waypoint.
+
+    Indoor object-goal: detect fridge → fly to the point ``standoff_m`` in front of
+    it (along the ray to the object), not into the object and not an ann polyline.
+
+    Outdoor / legacy: pass ``standoff_m=0`` to keep the object point unchanged.
+    """
+    p = np.asarray(object_goal_rel[:3], dtype=np.float32)
+    dist = float(np.linalg.norm(p))
+    if dist < 1e-6:
+        return np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    stand = float(max(0.0, standoff_m))
+    if stand <= 1e-8:
+        out = np.array([p[0], p[1], p[2], dist], dtype=np.float32)
+        return out
+    if dist <= stand:
+        # Already inside the standoff ball — waypoint is current pose.
+        return np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    scale = (dist - stand) / dist
+    p2 = p * np.float32(scale)
+    return np.array(
+        [float(p2[0]), float(p2[1]), float(p2[2]), float(np.linalg.norm(p2))],
+        dtype=np.float32,
+    )
+
+
 def project_3d_to_pixel(
     p_body: Sequence[float],
     intrinsics: CameraIntrinsics,

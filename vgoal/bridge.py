@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from vgoal.detector import BaseDetector, DetectionResult
-from vgoal.geometry import CameraIntrinsics, bbox_to_goal_rel
+from vgoal.geometry import CameraIntrinsics, bbox_to_goal_rel, apply_approach_standoff
 from vgoal.tracker import TargetState, TargetTracker, TrackerConfig
 
 
@@ -35,6 +35,9 @@ class VisualGoalPolicyConfig:
     use_planner: bool = True
     planner_horizon: int = 5
     max_target_dist_m: float = 160.0
+    # Indoor object-goal: fly to a point this far in front of the detected object.
+    # 0 keeps legacy outdoor behavior (goal_rel points at object surface).
+    approach_standoff_m: float = 0.0
 
 
 class VisualGoalWAMPolicy:
@@ -67,6 +70,7 @@ class VisualGoalWAMPolicy:
         self._prev_act: Optional[np.ndarray] = None
 
         self.last_detection: Optional[DetectionResult] = None
+        self.last_object_goal_rel: Optional[np.ndarray] = None
         self.last_goal_rel: Optional[np.ndarray] = None
         self.last_target_state: TargetState = TargetState.SEARCHING
 
@@ -79,6 +83,7 @@ class VisualGoalWAMPolicy:
         self._latent = None
         self._prev_act = None
         self.last_detection = None
+        self.last_object_goal_rel = None
         self.last_goal_rel = None
         self.last_target_state = TargetState.SEARCHING
         if hasattr(self.dynamics, "reset") and callable(self.dynamics.reset):
@@ -191,6 +196,15 @@ class VisualGoalWAMPolicy:
                             gr[3] = float(np.linalg.norm(gr[:3]))
                         measured_goal_rel = gr
                         det_conf = det.confidence
+
+        self.last_object_goal_rel = (
+            None if measured_goal_rel is None else np.asarray(measured_goal_rel, dtype=np.float32).copy()
+        )
+        # Indoor: object hit → standoff waypoint (e.g. 1 m in front of fridge).
+        if measured_goal_rel is not None and float(self.config.approach_standoff_m) > 0.0:
+            measured_goal_rel = apply_approach_standoff(
+                measured_goal_rel, float(self.config.approach_standoff_m)
+            )
 
         # Step 3: Update spatial tracker with dead-reckoning
         ego_delta, dyaw = self._estimate_ego_delta(obs)
