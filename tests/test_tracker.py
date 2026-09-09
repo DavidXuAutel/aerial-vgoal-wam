@@ -69,6 +69,20 @@ class TestTracker(unittest.TestCase):
         self.assertEqual(state, TargetState.ARRIVED)
         self.assertIsNotNone(tracker.goal_rel)
 
+    def test_tracker_rejects_depth_inflation(self):
+        tracker = TargetTracker(
+            TrackerConfig(ema_alpha=0.7, inflate_reject_m=4.0, inflate_alpha=0.15)
+        )
+        tracker.update([10.0, 0.0, 0.0, 10.0], dt=0.2, confidence=0.9)
+        tracker.update([22.0, 0.0, 0.0, 22.0], dt=0.2, confidence=0.9)
+        self.assertLess(float(tracker.goal_rel[0]), 14.0)
+
+    def test_tracker_trusts_closer_measurement(self):
+        tracker = TargetTracker(TrackerConfig(ema_alpha=0.7, near_ema_alpha=0.95))
+        tracker.update([25.0, 0.0, 0.0, 25.0], dt=0.2, confidence=0.9)
+        tracker.update([8.0, 0.0, 0.0, 8.0], dt=0.2, confidence=0.9)
+        self.assertLess(float(tracker.goal_rel[0]), 11.0)
+
 
 if __name__ == "__main__":
     unittest.main()

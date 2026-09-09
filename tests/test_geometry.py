@@ -3,7 +3,15 @@
 import unittest
 import numpy as np
 
-from vgoal.geometry import CameraIntrinsics, bbox_to_goal_rel, extract_target_depth, project_3d_to_pixel, apply_approach_standoff
+from vgoal.geometry import (
+    CameraIntrinsics,
+    bbox_forward_depth_prior,
+    bbox_to_goal_rel,
+    extract_target_depth,
+    fuse_target_depth,
+    project_3d_to_pixel,
+    apply_approach_standoff,
+)
 
 
 class TestGeometry(unittest.TestCase):
@@ -79,6 +87,24 @@ class TestGeometry(unittest.TestCase):
         obj = np.array([5.0, 1.0, 0.0, float(np.sqrt(26.0))], dtype=np.float32)
         wp = apply_approach_standoff(obj, 0.0)
         self.assertTrue(np.allclose(wp[:3], obj[:3]))
+
+    def test_bbox_forward_depth_prior(self):
+        cam = CameraIntrinsics.from_fov(fov_deg=90.0, width=640, height=480)
+        bbox = [280, 200, 360, 280]  # 80 px wide
+        d = bbox_forward_depth_prior(bbox, cam, object_width_m=2.0)
+        self.assertTrue(np.isclose(d, 8.0, atol=1e-4))
+
+    def test_fuse_target_depth_pulls_closer(self):
+        fused = fuse_target_depth(50.0, 12.0, bbox_width_px=64.0)
+        self.assertTrue(np.isclose(fused, 12.0, atol=1e-4))
+
+    def test_bbox_fuse_corrects_overestimated_depth(self):
+        cam = CameraIntrinsics.from_fov(fov_deg=90.0, width=640, height=480)
+        depth_map = np.full((480, 640), 50.0, dtype=np.float32)
+        bbox = [280, 200, 360, 280]  # 80 px → prior ≈ 8 m
+        goal_rel = bbox_to_goal_rel(bbox, depth_map, cam, fuse_bbox_depth=True, object_width_m=2.0)
+        self.assertIsNotNone(goal_rel)
+        self.assertLess(float(goal_rel[0]), 15.0)
 
 
 if __name__ == "__main__":

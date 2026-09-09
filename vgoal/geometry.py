@@ -96,6 +96,47 @@ def extract_target_depth(
     return float(np.median(patch[valid]))
 
 
+def bbox_forward_depth_prior(
+    bbox: Sequence[float],
+    intrinsics: CameraIntrinsics,
+    *,
+    src_shape: Optional[Tuple[int, int]] = None,
+    object_width_m: float = 2.0,
+) -> float:
+    """Pinhole forward depth from bbox width and assumed object size (meters)."""
+    u0, v0, u1, v1 = [float(x) for x in bbox]
+    if src_shape is not None:
+        src_w, src_h = src_shape
+        if src_w > 0 and src_h > 0:
+            scale_x = float(intrinsics.width) / float(src_w)
+            u0 *= scale_x
+            u1 *= scale_x
+    w_px = max(float(u1 - u0), 1.0)
+    if w_px < 3.0:
+        return float("nan")
+    d_fwd = float(intrinsics.fx) * float(max(0.5, object_width_m)) / w_px
+    return d_fwd if np.isfinite(d_fwd) and d_fwd > 0.0 else float("nan")
+
+
+def fuse_target_depth(
+    d_depth: float,
+    d_bbox: float,
+    bbox_width_px: float,
+    *,
+    min_bbox_px: float = 8.0,
+    max_blend_bbox_px: float = 56.0,
+) -> float:
+    """Fuse D̂ patch depth with bbox-width prior; pull toward nearer estimate when bbox is large."""
+    if not np.isfinite(d_depth) or d_depth <= 0.0:
+        return d_bbox if np.isfinite(d_bbox) and d_bbox > 0.0 else float("nan")
+    if not np.isfinite(d_bbox) or d_bbox <= 0.0 or bbox_width_px < min_bbox_px:
+        return float(d_depth)
+    if d_bbox >= d_depth:
+        return float(d_depth)
+    t = float(np.clip((bbox_width_px - min_bbox_px) / max(1e-3, max_blend_bbox_px - min_bbox_px), 0.0, 1.0))
+    return float((1.0 - t) * d_depth + t * d_bbox)
+
+
 def bbox_to_goal_rel(
     bbox: Sequence[float],
     depth_map: np.ndarray,
@@ -103,6 +144,8 @@ def bbox_to_goal_rel(
     *,
     src_shape: Optional[Tuple[int, int]] = None,
     core_frac: float = 0.5,
+    object_width_m: float = 2.0,
+    fuse_bbox_depth: bool = True,
 ) -> Optional[np.ndarray]:
     """Back-project 2D bbox + depth map to 4D body-frame goal_rel.
 
@@ -113,7 +156,16 @@ def bbox_to_goal_rel(
     Returns:
         np.ndarray [d_fwd, d_left, d_up, remaining_dist] in float32, or None if invalid.
     """
-    d_target = extract_target_depth(depth_map, bbox, src_shape=src_shape, core_frac=core_frac)
+    d_depth = extract_target_depth(depth_map, bbox, src_shape=src_shape, core_frac=core_frac)
+    u0, v0, u1, v1 = [float(x) for x in bbox]
+    bbox_w_px = float(u1 - u0)
+    if fuse_bbox_depth:
+        d_bbox = bbox_forward_depth_prior(
+            bbox, intrinsics, src_shape=src_shape, object_width_m=object_width_m
+        )
+        d_target = fuse_target_depth(d_depth, d_bbox, bbox_w_px)
+    else:
+        d_target = d_depth
     if not np.isfinite(d_target) or d_target <= 0.0:
         return None
 

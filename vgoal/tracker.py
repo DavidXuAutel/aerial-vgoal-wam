@@ -25,6 +25,10 @@ class TrackerConfig:
     max_occlusion_s: float = 2.0      # Max duration to hold target in OCCLUDED state
     ema_alpha: float = 0.7            # Smoothing factor for newly detected target (1.0 = no smoothing)
     min_confidence: float = 0.5       # Detection confidence threshold
+    near_dist_m: float = 35.0         # Below this, trust fresh measurements more
+    near_ema_alpha: float = 0.92      # EMA weight on new measurement when near / closing
+    inflate_reject_m: float = 4.0       # Ignore sudden depth inflation beyond this (m)
+    inflate_alpha: float = 0.15         # EMA weight when measurement jumps farther
 
 
 class TargetTracker:
@@ -54,6 +58,20 @@ class TargetTracker:
             self._target_body[2],
             dist
         ], dtype=np.float32)
+
+    def _ema_alpha_for_measurement(self, raw_p: np.ndarray) -> float:
+        cfg = self.config
+        alpha = float(np.clip(cfg.ema_alpha, 0.05, 1.0))
+        meas_dist = float(np.linalg.norm(raw_p))
+        if meas_dist <= float(cfg.near_dist_m):
+            alpha = max(alpha, float(cfg.near_ema_alpha))
+        if self._target_body is not None:
+            cur_dist = float(np.linalg.norm(self._target_body))
+            if meas_dist < cur_dist - 0.5:
+                alpha = max(alpha, float(cfg.near_ema_alpha))
+            elif meas_dist > cur_dist + float(cfg.inflate_reject_m):
+                alpha = min(alpha, float(cfg.inflate_alpha))
+        return float(np.clip(alpha, 0.05, 1.0))
 
     def update(
         self,
@@ -85,8 +103,7 @@ class TargetTracker:
             if self._target_body is None or self.state == TargetState.SEARCHING:
                 self._target_body = raw_p
             else:
-                # Apply Exponential Moving Average (EMA) smoothing
-                alpha = float(np.clip(self.config.ema_alpha, 0.05, 1.0))
+                alpha = self._ema_alpha_for_measurement(raw_p)
                 self._target_body = alpha * raw_p + (1.0 - alpha) * self._target_body
 
             self._time_since_last_seen = 0.0
