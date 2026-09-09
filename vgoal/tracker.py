@@ -29,6 +29,7 @@ class TrackerConfig:
     near_ema_alpha: float = 0.92      # EMA weight on new measurement when near / closing
     inflate_reject_m: float = 4.0       # Ignore sudden depth inflation beyond this (m)
     inflate_alpha: float = 0.15         # EMA weight when measurement jumps farther
+    freeze_dist_on_occlude: bool = True  # Static target: OCCLUDED dead-reckoning may not inflate range
 
 
 class TargetTracker:
@@ -119,6 +120,7 @@ class TargetTracker:
 
         if self._target_body is not None and self._time_since_last_seen <= self.config.max_occlusion_s:
             # Dead-reckoning update based on drone ego-motion
+            prev_dist = float(np.linalg.norm(self._target_body))
             p_prev = self._target_body.copy()
 
             # Subtract drone translation in body frame
@@ -137,6 +139,9 @@ class TargetTracker:
                 p_prev[0] = fwd_new
                 p_prev[1] = left_new
 
+            new_dist = float(np.linalg.norm(p_prev))
+            if self.config.freeze_dist_on_occlude and new_dist > prev_dist + 1e-3:
+                p_prev = p_prev * (prev_dist / max(new_dist, 1e-3))
             self._target_body = p_prev
             dist = float(np.linalg.norm(self._target_body))
             if dist <= self.config.success_dist_m:

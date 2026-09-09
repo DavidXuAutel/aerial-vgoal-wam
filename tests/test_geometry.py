@@ -98,6 +98,12 @@ class TestGeometry(unittest.TestCase):
         fused = fuse_target_depth(50.0, 12.0, bbox_width_px=64.0)
         self.assertTrue(np.isclose(fused, 12.0, atol=1e-4))
 
+    def test_fuse_near_prior_uses_min(self):
+        fused = fuse_target_depth(
+            30.0, 11.0, bbox_width_px=24.0, bbox_prior_near=True, near_bbox_px=20.0
+        )
+        self.assertTrue(np.isclose(fused, 11.0, atol=1e-4))
+
     def test_bbox_fuse_corrects_overestimated_depth(self):
         cam = CameraIntrinsics.from_fov(fov_deg=90.0, width=640, height=480)
         depth_map = np.full((480, 640), 50.0, dtype=np.float32)

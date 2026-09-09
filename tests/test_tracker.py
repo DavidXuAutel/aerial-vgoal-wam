@@ -83,6 +83,15 @@ class TestTracker(unittest.TestCase):
         tracker.update([8.0, 0.0, 0.0, 8.0], dt=0.2, confidence=0.9)
         self.assertLess(float(tracker.goal_rel[0]), 11.0)
 
+    def test_tracker_occlusion_freezes_distance(self):
+        tracker = TargetTracker(
+            TrackerConfig(max_occlusion_s=2.0, freeze_dist_on_occlude=True)
+        )
+        tracker.update([12.0, 0.0, 0.0, 12.0], dt=0.2, confidence=0.9)
+        tracker.update(None, dt=0.2, ego_delta_body=[-5.0, 0.0, 0.0])
+        self.assertEqual(tracker.state, TargetState.OCCLUDED)
+        self.assertLessEqual(float(tracker.goal_rel[3]), 12.0 + 1e-3)
+
 
 if __name__ == "__main__":
     unittest.main()

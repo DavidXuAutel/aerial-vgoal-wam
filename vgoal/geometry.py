@@ -125,8 +125,25 @@ def fuse_target_depth(
     *,
     min_bbox_px: float = 8.0,
     max_blend_bbox_px: float = 56.0,
+    near_bbox_px: float = 20.0,
+    near_prior_dist_m: float = 25.0,
+    bbox_prior_near: bool = False,
 ) -> float:
-    """Fuse D̂ patch depth with bbox-width prior; pull toward nearer estimate when bbox is large."""
+    """Fuse D̂ patch depth with bbox-width prior.
+
+    When ``bbox_prior_near`` is set, use ``min(d_bbox, d_depth)`` in the near regime
+    (bbox wide enough or prior already within ``near_prior_dist_m``); D̂ is only a ceiling.
+    """
+    if bbox_prior_near and np.isfinite(d_bbox) and d_bbox > 0.0:
+        near_regime = (
+            bbox_width_px >= float(near_bbox_px)
+            or float(d_bbox) <= float(near_prior_dist_m)
+        )
+        if near_regime:
+            if np.isfinite(d_depth) and d_depth > 0.0:
+                return float(min(d_bbox, d_depth))
+            return float(d_bbox)
+
     if not np.isfinite(d_depth) or d_depth <= 0.0:
         return d_bbox if np.isfinite(d_bbox) and d_bbox > 0.0 else float("nan")
     if not np.isfinite(d_bbox) or d_bbox <= 0.0 or bbox_width_px < min_bbox_px:
@@ -146,6 +163,9 @@ def bbox_to_goal_rel(
     core_frac: float = 0.5,
     object_width_m: float = 2.0,
     fuse_bbox_depth: bool = True,
+    near_bbox_px: float = 20.0,
+    near_prior_dist_m: float = 25.0,
+    bbox_prior_near: bool = True,
 ) -> Optional[np.ndarray]:
     """Back-project 2D bbox + depth map to 4D body-frame goal_rel.
 
@@ -163,7 +183,14 @@ def bbox_to_goal_rel(
         d_bbox = bbox_forward_depth_prior(
             bbox, intrinsics, src_shape=src_shape, object_width_m=object_width_m
         )
-        d_target = fuse_target_depth(d_depth, d_bbox, bbox_w_px)
+        d_target = fuse_target_depth(
+            d_depth,
+            d_bbox,
+            bbox_w_px,
+            near_bbox_px=near_bbox_px,
+            near_prior_dist_m=near_prior_dist_m,
+            bbox_prior_near=bbox_prior_near,
+        )
     else:
         d_target = d_depth
     if not np.isfinite(d_target) or d_target <= 0.0:
